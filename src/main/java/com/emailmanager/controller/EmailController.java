@@ -341,7 +341,6 @@ public class EmailController {
      * Send a new email (compose)
      */
     @PostMapping("/send")
-    @Transactional
     public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request) {
         Long accountId = Long.parseLong(request.get("accountId"));
         String to = request.get("to");
@@ -362,7 +361,7 @@ public class EmailController {
                     if (success) {
                         // Save a local copy in Sent folder
                         Email sent = new Email();
-                        sent.setAccount(account);
+                        sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
                         sent.setSubject(subject);
                         sent.setFromAddress(account.getEmailAddress());
@@ -394,7 +393,6 @@ public class EmailController {
      * Reply to an email
      */
     @PostMapping("/{id}/reply")
-    @Transactional
     public ResponseEntity<Map<String, String>> replyToEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request) {
         return emailRepository.findById(id)
@@ -436,7 +434,7 @@ public class EmailController {
                                         + (email.getToAddresses() != null ? "," + email.getToAddresses() : "")
                                 : email.getFromAddress();
                         Email sent = new Email();
-                        sent.setAccount(account);
+                        sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
                         sent.setSubject(replySubjectSaved);
                         sent.setFromAddress(account.getEmailAddress());
@@ -468,7 +466,6 @@ public class EmailController {
      * Forward an email
      */
     @PostMapping("/{id}/forward")
-    @Transactional
     public ResponseEntity<Map<String, String>> forwardEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request) {
         return emailRepository.findById(id)
@@ -505,7 +502,7 @@ public class EmailController {
                     if (success) {
                         // Save a local copy in Sent folder
                         Email sent = new Email();
-                        sent.setAccount(account);
+                        sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
                         sent.setSubject(fwdSubject);
                         sent.setFromAddress(account.getEmailAddress());

@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ComposeEmail from './ComposeEmail';
+
+const POLL_INTERVAL_MS = 60000; // 60 seconds
 
 function EmailList({ accounts }) {
   const [emails, setEmails] = useState([]);
@@ -11,6 +13,15 @@ function EmailList({ accounts }) {
   const [composeMode, setComposeMode] = useState(null); // null | 'compose' | 'reply' | 'replyAll' | 'forward'
   const [selectedEmails, setSelectedEmails] = useState(new Set());
   const [actionFeedback, setActionFeedback] = useState('');
+  const [newEmailCount, setNewEmailCount] = useState(0);
+
+  // Stable refs so the polling interval doesn't go stale
+  const selectedAccountRef = useRef(selectedAccount);
+  const filterRef = useRef(filter);
+  const emailsRef = useRef(emails);
+  useEffect(() => { selectedAccountRef.current = selectedAccount; }, [selectedAccount]);
+  useEffect(() => { filterRef.current = filter; }, [filter]);
+  useEffect(() => { emailsRef.current = emails; }, [emails]);
 
   useEffect(() => {
     if (accounts.length > 0 && !selectedAccount) {
@@ -32,14 +43,64 @@ function EmailList({ accounts }) {
     }
   }, [actionFeedback]);
 
-  const fetchEmails = async () => {
+  // Auto-clear new-email badge
+  useEffect(() => {
+    if (newEmailCount > 0) {
+      const t = setTimeout(() => setNewEmailCount(0), 5000);
+      return () => clearTimeout(t);
+    }
+  }, [newEmailCount]);
+
+  // Background polling — silently checks for new emails without resetting loading state
+  useEffect(() => {
+    const poll = async () => {
+      const accountId = selectedAccountRef.current;
+      const currentFilter = filterRef.current;
+      if (!accountId) return;
+      try {
+        // Sync from Gmail before checking for new arrivals
+        await fetch(`/api/accounts/${accountId}/sync`, { method: 'POST' });
+
+        let url = `/api/emails/account/${accountId}`;
+        if (currentFilter === 'unread') url += '/unread';
+        else if (currentFilter === 'urgent') url += '/importance/URGENT';
+        else if (currentFilter === 'high') url += '/importance/HIGH';
+        else if (currentFilter === 'sent') url += '/category/SENT';
+
+        const response = await fetch(url);
+        if (!response.ok) return;
+        const data = await response.json();
+        const fetched = data.content || [];
+
+        setEmails(prev => {
+          const prevIds = new Set(prev.map(e => e.id));
+          const incoming = fetched.filter(e => !prevIds.has(e.id));
+          if (incoming.length > 0) {
+            setNewEmailCount(incoming.length);
+            return [...incoming, ...prev];
+          }
+          return prev;
+        });
+      } catch (_) {
+        // Silent — don't disturb the UI on poll failure
+      }
+    };
+
+    const timer = setInterval(poll, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, []); // empty deps — uses refs to stay stable
+
+  // Fetch local DB emails (no Gmail sync)
+  const fetchEmails = async (accountId = selectedAccount, currentFilter = filter) => {
+    if (!accountId) return;
     setLoading(true);
+    setNewEmailCount(0);
     try {
-      let url = `/api/emails/account/${selectedAccount}`;
-      if (filter === 'unread') url += '/unread';
-      else if (filter === 'urgent') url += '/importance/URGENT';
-      else if (filter === 'high') url += '/importance/HIGH';
-      else if (filter === 'sent') url += '/category/SENT';
+      let url = `/api/emails/account/${accountId}`;
+      if (currentFilter === 'unread') url += '/unread';
+      else if (currentFilter === 'urgent') url += '/importance/URGENT';
+      else if (currentFilter === 'high') url += '/importance/HIGH';
+      else if (currentFilter === 'sent') url += '/category/SENT';
 
       const response = await fetch(url);
       const data = await response.json();
@@ -50,6 +111,19 @@ function EmailList({ accounts }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Sync from Gmail then reload local list
+  const syncAndRefresh = async () => {
+    if (!selectedAccount) return;
+    setLoading(true);
+    setNewEmailCount(0);
+    try {
+      await fetch(`/api/accounts/${selectedAccount}/sync`, { method: 'POST' });
+    } catch (error) {
+      console.error('Sync error:', error);
+    }
+    await fetchEmails();
   };
 
   const openEmail = async (email) => {
@@ -199,6 +273,13 @@ function EmailList({ accounts }) {
         <div className="action-feedback">{actionFeedback}</div>
       )}
 
+      {newEmailCount > 0 && (
+        <div className="action-feedback" style={{background: '#1a73e8', cursor: 'pointer'}}
+          onClick={fetchEmails}>
+          📬 {newEmailCount} new email{newEmailCount > 1 ? 's' : ''} arrived — click to refresh
+        </div>
+      )}
+
       <div style={{display: 'flex', gap: '1rem', alignItems: 'flex-start'}}>
         {/* Email List Panel */}
         <div className="card" style={{flex: selectedEmail ? '0 0 40%' : '1', minWidth: 0}}>
@@ -235,7 +316,7 @@ function EmailList({ accounts }) {
             </select>
           </div>
 
-          <button onClick={fetchEmails} className="btn btn-primary">
+          <button onClick={syncAndRefresh} className="btn btn-primary">
             🔄 Refresh
           </button>
 
