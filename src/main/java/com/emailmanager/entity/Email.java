@@ -129,6 +129,7 @@ public class Email {
         FORUMS,
         SPAM,
         TRASH,
-        ARCHIVED
+        ARCHIVED,
+        SENT
     }
 }

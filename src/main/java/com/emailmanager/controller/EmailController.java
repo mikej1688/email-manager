@@ -7,6 +7,7 @@ import com.emailmanager.repository.EmailRepository;
 import com.emailmanager.service.email.GmailService;
 import com.emailmanager.service.email.ImapEmailService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -18,6 +19,8 @@ import org.springframework.web.bind.annotation.*;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
  * REST API controller for emails
@@ -26,6 +29,7 @@ import java.util.Map;
 @RequestMapping("/api/emails")
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
+@Slf4j
 public class EmailController {
 
     private final EmailRepository emailRepository;
@@ -62,7 +66,10 @@ public class EmailController {
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccount(account, pageable);
+                    Page<Email> emails = emailRepository.findByAccountAndCategoryNotIn(
+                            account,
+                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT),
+                            pageable);
                     return ResponseEntity.ok(emails);
                 })
                 .orElse(ResponseEntity.notFound().build());
@@ -80,7 +87,10 @@ public class EmailController {
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndIsRead(account, false, pageable);
+                    Page<Email> emails = emailRepository.findByAccountAndIsReadAndCategoryNotIn(
+                            account, false,
+                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT),
+                            pageable);
                     return ResponseEntity.ok(emails);
                 })
                 .orElse(ResponseEntity.notFound().build());
@@ -331,6 +341,7 @@ public class EmailController {
      * Send a new email (compose)
      */
     @PostMapping("/send")
+    @Transactional
     public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request) {
         Long accountId = Long.parseLong(request.get("accountId"));
         String to = request.get("to");
@@ -349,6 +360,24 @@ public class EmailController {
                     }
                     Map<String, String> result = new HashMap<>();
                     if (success) {
+                        // Save a local copy in Sent folder
+                        Email sent = new Email();
+                        sent.setAccount(account);
+                        sent.setMessageId("sent-" + UUID.randomUUID().toString());
+                        sent.setSubject(subject);
+                        sent.setFromAddress(account.getEmailAddress());
+                        sent.setToAddresses(to);
+                        sent.setCcAddresses(cc);
+                        sent.setBodyPlainText(body);
+                        sent.setReceivedDate(LocalDateTime.now());
+                        sent.setIsRead(true);
+                        sent.setCategory(Email.EmailCategory.SENT);
+                        try {
+                            emailRepository.save(sent);
+                        } catch (Exception e) {
+                            log.error("Failed to save sent copy to local DB", e);
+                        }
+
                         result.put("status", "sent");
                         result.put("message", "Email sent successfully");
                         return ResponseEntity.ok(result);
@@ -365,6 +394,7 @@ public class EmailController {
      * Reply to an email
      */
     @PostMapping("/{id}/reply")
+    @Transactional
     public ResponseEntity<Map<String, String>> replyToEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request) {
         return emailRepository.findById(id)
@@ -398,6 +428,30 @@ public class EmailController {
 
                     Map<String, String> result = new HashMap<>();
                     if (success) {
+                        // Save a local copy in Sent folder
+                        String replySubjectSaved = email.getSubject().startsWith("Re:") ? email.getSubject()
+                                : "Re: " + email.getSubject();
+                        String replyTo = replyAll
+                                ? email.getFromAddress()
+                                        + (email.getToAddresses() != null ? "," + email.getToAddresses() : "")
+                                : email.getFromAddress();
+                        Email sent = new Email();
+                        sent.setAccount(account);
+                        sent.setMessageId("sent-" + UUID.randomUUID().toString());
+                        sent.setSubject(replySubjectSaved);
+                        sent.setFromAddress(account.getEmailAddress());
+                        sent.setToAddresses(replyTo);
+                        sent.setCcAddresses(cc);
+                        sent.setBodyPlainText(body);
+                        sent.setReceivedDate(LocalDateTime.now());
+                        sent.setIsRead(true);
+                        sent.setCategory(Email.EmailCategory.SENT);
+                        try {
+                            emailRepository.save(sent);
+                        } catch (Exception e) {
+                            log.error("Failed to save reply sent copy to local DB", e);
+                        }
+
                         result.put("status", "sent");
                         result.put("message", "Reply sent successfully");
                         return ResponseEntity.ok(result);
@@ -414,6 +468,7 @@ public class EmailController {
      * Forward an email
      */
     @PostMapping("/{id}/forward")
+    @Transactional
     public ResponseEntity<Map<String, String>> forwardEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request) {
         return emailRepository.findById(id)
@@ -448,6 +503,23 @@ public class EmailController {
 
                     Map<String, String> result = new HashMap<>();
                     if (success) {
+                        // Save a local copy in Sent folder
+                        Email sent = new Email();
+                        sent.setAccount(account);
+                        sent.setMessageId("sent-" + UUID.randomUUID().toString());
+                        sent.setSubject(fwdSubject);
+                        sent.setFromAddress(account.getEmailAddress());
+                        sent.setToAddresses(to);
+                        sent.setBodyPlainText(fullBody);
+                        sent.setReceivedDate(LocalDateTime.now());
+                        sent.setIsRead(true);
+                        sent.setCategory(Email.EmailCategory.SENT);
+                        try {
+                            emailRepository.save(sent);
+                        } catch (Exception e) {
+                            log.error("Failed to save forward sent copy to local DB", e);
+                        }
+
                         result.put("status", "sent");
                         result.put("message", "Email forwarded successfully");
                         return ResponseEntity.ok(result);
@@ -470,6 +542,8 @@ public class EmailController {
                 return "SPAM";
             case TRASH:
                 return "TRASH";
+            case SENT:
+                return "SENT";
             case SOCIAL:
                 return "CATEGORY_SOCIAL";
             case PROMOTIONS:

@@ -39,6 +39,7 @@ function EmailList({ accounts }) {
       if (filter === 'unread') url += '/unread';
       else if (filter === 'urgent') url += '/importance/URGENT';
       else if (filter === 'high') url += '/importance/HIGH';
+      else if (filter === 'sent') url += '/category/SENT';
 
       const response = await fetch(url);
       const data = await response.json();
@@ -230,6 +231,7 @@ function EmailList({ accounts }) {
               <option value="unread">Unread</option>
               <option value="urgent">Urgent</option>
               <option value="high">High Priority</option>
+              <option value="sent">Sent</option>
             </select>
           </div>
 
@@ -277,7 +279,8 @@ function EmailList({ accounts }) {
                   <div style={{flex: 1, minWidth: 0}}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                       <div>
-                        <strong>{email.fromAddress}</strong>
+                        <strong>{filter === 'sent' ? (email.toAddresses || email.fromAddress) : email.fromAddress}</strong>
+                        {filter === 'sent' && <span style={{marginLeft: '6px', fontSize: '0.8rem', color: '#5f6368'}}>To</span>}
                         {getImportanceBadge(email.importance)}
                         {email.isPhishing && <span style={{color: 'red', marginLeft: '0.5rem'}}>⚠️ PHISHING</span>}
                         {email.isSpam && <span style={{color: 'orange', marginLeft: '0.5rem'}}>🗑️ SPAM</span>}
@@ -328,7 +331,7 @@ function EmailList({ accounts }) {
                 <div className="move-dropdown">
                   <button className="btn-icon" title="Move to...">📁</button>
                   <div className="move-dropdown-content">
-                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED'].map(cat => (
+                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED', 'SENT'].map(cat => (
                       <button key={cat} onClick={() => moveEmail(selectedEmail.id, cat)}>{cat}</button>
                     ))}
                   </div>

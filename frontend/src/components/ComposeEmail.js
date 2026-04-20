@@ -71,8 +71,12 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
         if (onSent) onSent();
         onClose();
       } else {
-        const data = await response.json();
-        setError(data.message || 'Failed to send email');
+        let msg = 'Failed to send email';
+        try {
+          const data = await response.json();
+          msg = data.message || msg;
+        } catch (_) {}
+        setError(msg);
       }
     } catch (err) {
       setError('Network error: could not send email');

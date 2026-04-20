@@ -19,7 +19,13 @@ public interface EmailRepository extends JpaRepository<Email, Long> {
 
     Page<Email> findByAccount(EmailAccount account, Pageable pageable);
 
+    Page<Email> findByAccountAndCategoryNotIn(EmailAccount account, List<Email.EmailCategory> excludedCategories,
+            Pageable pageable);
+
     Page<Email> findByAccountAndIsRead(EmailAccount account, Boolean isRead, Pageable pageable);
+
+    Page<Email> findByAccountAndIsReadAndCategoryNotIn(EmailAccount account, Boolean isRead,
+            List<Email.EmailCategory> excludedCategories, Pageable pageable);
 
     Page<Email> findByAccountAndCategory(EmailAccount account, Email.EmailCategory category, Pageable pageable);
 
