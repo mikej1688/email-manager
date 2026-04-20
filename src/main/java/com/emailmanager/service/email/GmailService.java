@@ -12,11 +12,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import jakarta.mail.Session;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 /**
  * Gmail API integration service
@@ -136,16 +141,143 @@ public class GmailService implements EmailProviderService {
 
     @Override
     public boolean sendEmail(EmailAccount account, String to, String subject, String body) {
+        return sendComposedEmail(account, to, "", subject, body, false);
+    }
+
+    /**
+     * Send a composed email with CC and HTML support via Gmail API.
+     */
+    public boolean sendComposedEmail(EmailAccount account, String to, String cc, String subject, String body,
+            boolean isHtml) {
         try {
             Gmail service = getGmailService(account);
-            // Implementation for sending email
-            // This requires constructing a MIME message
-            log.info("Sending email notification to: {}", to);
+            MimeMessage mimeMessage = createMimeMessage(account.getEmailAddress(), to, cc, subject, body, isHtml, null);
+            Message message = createGmailMessage(mimeMessage);
+            service.users().messages().send("me", message).execute();
+            log.info("Email sent successfully from {} to {}", account.getEmailAddress(), to);
             return true;
         } catch (Exception e) {
-            log.error("Failed to send email", e);
+            log.error("Failed to send email from {}", account.getEmailAddress(), e);
             return false;
         }
+    }
+
+    /**
+     * Reply to an email via Gmail API, threading the reply into the conversation.
+     */
+    public boolean replyToEmail(EmailAccount account, String originalMessageId,
+            String originalFrom, String originalTo, String originalCc,
+            String originalSubject, String body, boolean replyAll, boolean isHtml) {
+        try {
+            Gmail service = getGmailService(account);
+
+            // Get the original message to find its threadId
+            Message original = service.users().messages().get("me", originalMessageId).setFormat("metadata").execute();
+            String threadId = original.getThreadId();
+
+            // Find the original Message-ID header for In-Reply-To
+            String inReplyTo = null;
+            if (original.getPayload() != null && original.getPayload().getHeaders() != null) {
+                for (var h : original.getPayload().getHeaders()) {
+                    if ("Message-ID".equalsIgnoreCase(h.getName()) || "Message-Id".equalsIgnoreCase(h.getName())) {
+                        inReplyTo = h.getValue();
+                        break;
+                    }
+                }
+            }
+
+            String to = originalFrom;
+            String cc = "";
+            if (replyAll) {
+                // Include original To and Cc, but exclude the sender's own address
+                StringBuilder ccBuilder = new StringBuilder();
+                if (originalTo != null && !originalTo.isEmpty()) {
+                    for (String addr : originalTo.split(",")) {
+                        String trimmed = addr.trim();
+                        if (!trimmed.isEmpty() && !trimmed.equalsIgnoreCase(account.getEmailAddress())) {
+                            if (ccBuilder.length() > 0)
+                                ccBuilder.append(", ");
+                            ccBuilder.append(trimmed);
+                        }
+                    }
+                }
+                if (originalCc != null && !originalCc.isEmpty()) {
+                    for (String addr : originalCc.split(",")) {
+                        String trimmed = addr.trim();
+                        if (!trimmed.isEmpty() && !trimmed.equalsIgnoreCase(account.getEmailAddress())) {
+                            if (ccBuilder.length() > 0)
+                                ccBuilder.append(", ");
+                            ccBuilder.append(trimmed);
+                        }
+                    }
+                }
+                cc = ccBuilder.toString();
+            }
+
+            String replySubject = originalSubject != null && originalSubject.startsWith("Re:") ? originalSubject
+                    : "Re: " + originalSubject;
+            MimeMessage mimeMessage = createMimeMessage(account.getEmailAddress(), to, cc, replySubject, body, isHtml,
+                    inReplyTo);
+            Message replyMessage = createGmailMessage(mimeMessage);
+            replyMessage.setThreadId(threadId);
+
+            service.users().messages().send("me", replyMessage).execute();
+            log.info("Reply sent successfully from {} to {}", account.getEmailAddress(), to);
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to send reply from {}", account.getEmailAddress(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Archive an email by removing it from INBOX.
+     */
+    public boolean archiveEmail(EmailAccount account, String messageId) {
+        try {
+            Gmail service = getGmailService(account);
+            com.google.api.services.gmail.model.ModifyMessageRequest request = new com.google.api.services.gmail.model.ModifyMessageRequest()
+                    .setRemoveLabelIds(List.of("INBOX"));
+            service.users().messages().modify("me", messageId, request).execute();
+            log.info("Email archived: {}", messageId);
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to archive email", e);
+            return false;
+        }
+    }
+
+    private MimeMessage createMimeMessage(String from, String to, String cc, String subject, String body,
+            boolean isHtml, String inReplyTo) throws Exception {
+        Properties props = new Properties();
+        Session session = Session.getDefaultInstance(props, null);
+        MimeMessage mimeMessage = new MimeMessage(session);
+        mimeMessage.setFrom(new InternetAddress(from));
+        mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.TO, InternetAddress.parse(to));
+        if (cc != null && !cc.isEmpty()) {
+            mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.CC, InternetAddress.parse(cc));
+        }
+        mimeMessage.setSubject(subject);
+        if (isHtml) {
+            mimeMessage.setContent(body, "text/html; charset=utf-8");
+        } else {
+            mimeMessage.setText(body, "utf-8");
+        }
+        if (inReplyTo != null) {
+            mimeMessage.setHeader("In-Reply-To", inReplyTo);
+            mimeMessage.setHeader("References", inReplyTo);
+        }
+        return mimeMessage;
+    }
+
+    private Message createGmailMessage(MimeMessage mimeMessage) throws Exception {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        mimeMessage.writeTo(buffer);
+        byte[] bytes = buffer.toByteArray();
+        String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        Message message = new Message();
+        message.setRaw(encodedEmail);
+        return message;
     }
 
     @Override

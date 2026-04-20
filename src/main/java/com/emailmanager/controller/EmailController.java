@@ -5,6 +5,7 @@ import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.repository.EmailAccountRepository;
 import com.emailmanager.repository.EmailRepository;
 import com.emailmanager.service.email.GmailService;
+import com.emailmanager.service.email.ImapEmailService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -30,6 +31,7 @@ public class EmailController {
     private final EmailRepository emailRepository;
     private final EmailAccountRepository emailAccountRepository;
     private final GmailService gmailService;
+    private final ImapEmailService imapEmailService;
 
     /**
      * Get all emails with pagination
@@ -213,16 +215,272 @@ public class EmailController {
     }
 
     /**
-     * Delete email
+     * Delete email - trash on remote provider and remove locally
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteEmail(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
+                    // Trash on remote provider
+                    try {
+                        EmailAccount account = emailAccountRepository
+                                .findById(email.getAccount().getId()).orElse(null);
+                        if (account != null) {
+                            if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                                gmailService.deleteEmail(account, email.getMessageId());
+                            } else {
+                                imapEmailService.deleteEmail(account, email.getMessageId());
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Log but still delete locally
+                    }
                     emailRepository.delete(email);
                     return ResponseEntity.ok().<Void>build();
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Move email to trash (soft delete - changes category to TRASH)
+     */
+    @PutMapping("/{id}/trash")
+    @Transactional
+    public ResponseEntity<Email> trashEmail(@PathVariable Long id) {
+        return emailRepository.findById(id)
+                .map(email -> {
+                    try {
+                        EmailAccount account = emailAccountRepository
+                                .findById(email.getAccount().getId()).orElse(null);
+                        if (account != null) {
+                            if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                                gmailService.deleteEmail(account, email.getMessageId());
+                            } else {
+                                imapEmailService.deleteEmail(account, email.getMessageId());
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Continue with local update even if remote fails
+                    }
+                    email.setCategory(Email.EmailCategory.TRASH);
+                    Email updated = emailRepository.save(email);
+                    return ResponseEntity.ok(updated);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Archive email
+     */
+    @PutMapping("/{id}/archive")
+    @Transactional
+    public ResponseEntity<Email> archiveEmail(@PathVariable Long id) {
+        return emailRepository.findById(id)
+                .map(email -> {
+                    try {
+                        EmailAccount account = emailAccountRepository
+                                .findById(email.getAccount().getId()).orElse(null);
+                        if (account != null && account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                            gmailService.archiveEmail(account, email.getMessageId());
+                        }
+                    } catch (Exception e) {
+                        // Continue with local update
+                    }
+                    email.setCategory(Email.EmailCategory.ARCHIVED);
+                    Email updated = emailRepository.save(email);
+                    return ResponseEntity.ok(updated);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Move email to a category/folder
+     */
+    @PutMapping("/{id}/move")
+    @Transactional
+    public ResponseEntity<Email> moveEmail(@PathVariable Long id, @RequestParam String category) {
+        return emailRepository.findById(id)
+                .<ResponseEntity<Email>>map(email -> {
+                    try {
+                        Email.EmailCategory targetCategory = Email.EmailCategory.valueOf(category.toUpperCase());
+                        try {
+                            EmailAccount account = emailAccountRepository
+                                    .findById(email.getAccount().getId()).orElse(null);
+                            if (account != null) {
+                                if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                                    gmailService.moveToFolder(account, email.getMessageId(),
+                                            mapCategoryToGmailLabel(targetCategory));
+                                } else {
+                                    imapEmailService.moveToFolder(account, email.getMessageId(), category);
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Continue with local update
+                        }
+                        email.setCategory(targetCategory);
+                        Email updated = emailRepository.save(email);
+                        return ResponseEntity.ok(updated);
+                    } catch (IllegalArgumentException e) {
+                        return ResponseEntity.<Email>badRequest().build();
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Send a new email (compose)
+     */
+    @PostMapping("/send")
+    public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request) {
+        Long accountId = Long.parseLong(request.get("accountId"));
+        String to = request.get("to");
+        String cc = request.getOrDefault("cc", "");
+        String subject = request.get("subject");
+        String body = request.get("body");
+        boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
+
+        return emailAccountRepository.findById(accountId)
+                .map(account -> {
+                    boolean success;
+                    if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                        success = gmailService.sendComposedEmail(account, to, cc, subject, body, isHtml);
+                    } else {
+                        success = imapEmailService.sendEmail(account, to, subject, body);
+                    }
+                    Map<String, String> result = new HashMap<>();
+                    if (success) {
+                        result.put("status", "sent");
+                        result.put("message", "Email sent successfully");
+                        return ResponseEntity.ok(result);
+                    } else {
+                        result.put("status", "error");
+                        result.put("message", "Failed to send email");
+                        return ResponseEntity.<Map<String, String>>internalServerError().body(result);
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Reply to an email
+     */
+    @PostMapping("/{id}/reply")
+    public ResponseEntity<Map<String, String>> replyToEmail(@PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return emailRepository.findById(id)
+                .<ResponseEntity<Map<String, String>>>map(email -> {
+                    String body = request.get("body");
+                    String cc = request.getOrDefault("cc", "");
+                    boolean replyAll = Boolean.parseBoolean(request.getOrDefault("replyAll", "false"));
+                    boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
+
+                    EmailAccount account = emailAccountRepository
+                            .findById(email.getAccount().getId()).orElse(null);
+                    if (account == null) {
+                        return ResponseEntity.<Map<String, String>>notFound().build();
+                    }
+
+                    boolean success;
+                    if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                        success = gmailService.replyToEmail(account, email.getMessageId(),
+                                email.getFromAddress(), email.getToAddresses(),
+                                email.getCcAddresses(), email.getSubject(), body, replyAll, isHtml);
+                    } else {
+                        // For IMAP, send as a new email with Re: prefix
+                        String replySubject = email.getSubject().startsWith("Re:") ? email.getSubject()
+                                : "Re: " + email.getSubject();
+                        String to = replyAll
+                                ? email.getFromAddress() + ","
+                                        + (email.getToAddresses() != null ? email.getToAddresses() : "")
+                                : email.getFromAddress();
+                        success = imapEmailService.sendEmail(account, to, replySubject, body);
+                    }
+
+                    Map<String, String> result = new HashMap<>();
+                    if (success) {
+                        result.put("status", "sent");
+                        result.put("message", "Reply sent successfully");
+                        return ResponseEntity.ok(result);
+                    } else {
+                        result.put("status", "error");
+                        result.put("message", "Failed to send reply");
+                        return ResponseEntity.<Map<String, String>>internalServerError().body(result);
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Forward an email
+     */
+    @PostMapping("/{id}/forward")
+    public ResponseEntity<Map<String, String>> forwardEmail(@PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return emailRepository.findById(id)
+                .<ResponseEntity<Map<String, String>>>map(email -> {
+                    String to = request.get("to");
+                    String body = request.getOrDefault("body", "");
+                    boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
+
+                    EmailAccount account = emailAccountRepository
+                            .findById(email.getAccount().getId()).orElse(null);
+                    if (account == null) {
+                        return ResponseEntity.<Map<String, String>>notFound().build();
+                    }
+
+                    String fwdSubject = email.getSubject().startsWith("Fwd:") ? email.getSubject()
+                            : "Fwd: " + email.getSubject();
+                    String originalContent = email.getBodyHtml() != null ? email.getBodyHtml()
+                            : (email.getBodyPlainText() != null ? email.getBodyPlainText() : "");
+                    String fullBody = body + "\n\n---------- Forwarded message ----------\n"
+                            + "From: " + email.getFromAddress() + "\n"
+                            + "Date: " + email.getReceivedDate() + "\n"
+                            + "Subject: " + email.getSubject() + "\n"
+                            + "To: " + (email.getToAddresses() != null ? email.getToAddresses() : "") + "\n\n"
+                            + originalContent;
+
+                    boolean success;
+                    if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                        success = gmailService.sendComposedEmail(account, to, "", fwdSubject, fullBody, isHtml);
+                    } else {
+                        success = imapEmailService.sendEmail(account, to, fwdSubject, fullBody);
+                    }
+
+                    Map<String, String> result = new HashMap<>();
+                    if (success) {
+                        result.put("status", "sent");
+                        result.put("message", "Email forwarded successfully");
+                        return ResponseEntity.ok(result);
+                    } else {
+                        result.put("status", "error");
+                        result.put("message", "Failed to forward email");
+                        return ResponseEntity.<Map<String, String>>internalServerError().body(result);
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    private String mapCategoryToGmailLabel(Email.EmailCategory category) {
+        switch (category) {
+            case INBOX:
+                return "INBOX";
+            case IMPORTANT:
+                return "IMPORTANT";
+            case SPAM:
+                return "SPAM";
+            case TRASH:
+                return "TRASH";
+            case SOCIAL:
+                return "CATEGORY_SOCIAL";
+            case PROMOTIONS:
+                return "CATEGORY_PROMOTIONS";
+            case UPDATES:
+                return "CATEGORY_UPDATES";
+            case FORUMS:
+                return "CATEGORY_FORUMS";
+            default:
+                return category.name();
+        }
     }
 
     /**

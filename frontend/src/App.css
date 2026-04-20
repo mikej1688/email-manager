@@ -209,3 +209,354 @@ form {
   outline: none;
   border-color: #3498db;
 }
+
+/* ===== Email Toolbar ===== */
+.email-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.email-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-divider {
+  display: inline-block;
+  width: 1px;
+  height: 20px;
+  background: #dadce0;
+  margin: 0 4px;
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 6px 8px;
+  border-radius: 50%;
+  color: #5f6368;
+  transition: background 0.2s;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  background: #e8eaed;
+}
+
+.btn-icon-sm {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.email-item:hover .btn-icon-sm,
+.email-item-actions:hover .btn-icon-sm {
+  opacity: 1;
+}
+
+.email-item-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+/* ===== Star button ===== */
+.star-btn {
+  cursor: pointer;
+  font-size: 1.1rem;
+  user-select: none;
+  transition: transform 0.15s;
+}
+
+.star-btn:hover {
+  transform: scale(1.2);
+}
+
+/* ===== Move dropdown ===== */
+.move-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.move-dropdown-content {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  z-index: 100;
+  min-width: 160px;
+  padding: 4px 0;
+}
+
+.move-dropdown:hover .move-dropdown-content {
+  display: block;
+}
+
+.move-dropdown-content button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #202124;
+}
+
+.move-dropdown-content button:hover {
+  background: #f1f3f4;
+}
+
+/* ===== Bulk actions ===== */
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: #e8f0fe;
+  border-radius: 8px;
+}
+
+/* ===== Email action bar (reply/forward) ===== */
+.email-action-bar {
+  padding: 10px 24px;
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.btn-action {
+  background: white;
+  border: 1px solid #dadce0;
+  border-radius: 18px;
+  padding: 8px 20px;
+  cursor: pointer;
+  color: #202124;
+  font-size: 0.85rem;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.btn-action:hover {
+  background: #f1f3f4;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.btn-action-secondary {
+  background: none;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+  color: #1a73e8;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-action-secondary:hover {
+  background: #f1f3f4;
+}
+
+/* ===== Action feedback toast ===== */
+.action-feedback {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #323232;
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  z-index: 10000;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  animation: feedbackIn 0.3s ease;
+}
+
+@keyframes feedbackIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ===== Compose Modal ===== */
+.compose-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 5000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 24px 24px 0;
+}
+
+.compose-modal {
+  width: 540px;
+  max-height: 80vh;
+  background: white;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.compose-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #404040;
+  color: white;
+  border-radius: 12px 12px 0 0;
+}
+
+.compose-title {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.compose-close {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.compose-close:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.compose-body {
+  flex: 1;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.compose-field {
+  display: flex;
+  align-items: center;
+  padding: 4px 16px;
+  border-bottom: 1px solid #f1f3f4;
+}
+
+.compose-field label {
+  width: 60px;
+  font-size: 0.85rem;
+  color: #5f6368;
+  flex-shrink: 0;
+}
+
+.compose-field input,
+.compose-field select {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 0.9rem;
+  padding: 10px 0;
+  background: transparent;
+  color: #202124;
+}
+
+.compose-field select {
+  cursor: pointer;
+}
+
+.compose-cc-btn {
+  background: none;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  color: #5f6368;
+  cursor: pointer;
+}
+
+.compose-cc-btn:hover {
+  background: #f1f3f4;
+}
+
+.compose-field-body {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+  border: none;
+}
+
+.compose-field-body textarea {
+  border: none;
+  outline: none;
+  resize: vertical;
+  font-family: Arial, sans-serif;
+  font-size: 0.9rem;
+  padding: 16px;
+  min-height: 200px;
+  color: #202124;
+  line-height: 1.6;
+}
+
+.compose-error {
+  padding: 8px 16px;
+  color: #d93025;
+  font-size: 0.85rem;
+  background: #fce8e6;
+}
+
+.compose-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #f1f3f4;
+}
+
+.compose-send-btn {
+  border-radius: 18px;
+  padding: 8px 24px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.compose-send-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.compose-discard-btn {
+  background: none;
+  border: none;
+  color: #5f6368;
+  cursor: pointer;
+  padding: 8px 16px;
+  border-radius: 18px;
+  font-size: 0.85rem;
+}
+
+.compose-discard-btn:hover {
+  background: #f1f3f4;
+}

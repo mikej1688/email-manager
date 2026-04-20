@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ComposeEmail from './ComposeEmail';
 
 function EmailList({ accounts }) {
   const [emails, setEmails] = useState([]);
@@ -7,6 +8,9 @@ function EmailList({ accounts }) {
   const [loading, setLoading] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailLoading, setEmailLoading] = useState(false);
+  const [composeMode, setComposeMode] = useState(null); // null | 'compose' | 'reply' | 'replyAll' | 'forward'
+  const [selectedEmails, setSelectedEmails] = useState(new Set());
+  const [actionFeedback, setActionFeedback] = useState('');
 
   useEffect(() => {
     if (accounts.length > 0 && !selectedAccount) {
@@ -20,35 +24,30 @@ function EmailList({ accounts }) {
     }
   }, [selectedAccount, filter]);
 
+  // Auto-clear feedback
+  useEffect(() => {
+    if (actionFeedback) {
+      const t = setTimeout(() => setActionFeedback(''), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [actionFeedback]);
+
   const fetchEmails = async () => {
     setLoading(true);
     try {
       let url = `/api/emails/account/${selectedAccount}`;
-      
-      if (filter === 'unread') {
-        url += '/unread';
-      } else if (filter === 'urgent') {
-        url += '/importance/URGENT';
-      } else if (filter === 'high') {
-        url += '/importance/HIGH';
-      }
+      if (filter === 'unread') url += '/unread';
+      else if (filter === 'urgent') url += '/importance/URGENT';
+      else if (filter === 'high') url += '/importance/HIGH';
 
       const response = await fetch(url);
       const data = await response.json();
       setEmails(data.content || []);
+      setSelectedEmails(new Set());
     } catch (error) {
       console.error('Error fetching emails:', error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const markAsRead = async (emailId) => {
-    try {
-      await fetch(`/api/emails/${emailId}/mark-read`, { method: 'PUT' });
-      fetchEmails();
-    } catch (error) {
-      console.error('Error marking email as read:', error);
     }
   };
 
@@ -85,6 +84,95 @@ function EmailList({ accounts }) {
     }
   };
 
+  // --- Action handlers ---
+
+  const trashEmail = async (emailId) => {
+    try {
+      const response = await fetch(`/api/emails/${emailId}/trash`, { method: 'PUT' });
+      if (response.ok) {
+        setEmails(prev => prev.filter(e => e.id !== emailId));
+        if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
+        setActionFeedback('Moved to Trash');
+      }
+    } catch (error) {
+      console.error('Error trashing email:', error);
+      setActionFeedback('Failed to delete');
+    }
+  };
+
+  const archiveEmail = async (emailId) => {
+    try {
+      const response = await fetch(`/api/emails/${emailId}/archive`, { method: 'PUT' });
+      if (response.ok) {
+        setEmails(prev => prev.filter(e => e.id !== emailId));
+        if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
+        setActionFeedback('Archived');
+      }
+    } catch (error) {
+      console.error('Error archiving email:', error);
+    }
+  };
+
+  const moveEmail = async (emailId, category) => {
+    try {
+      const response = await fetch(`/api/emails/${emailId}/move?category=${category}`, { method: 'PUT' });
+      if (response.ok) {
+        setEmails(prev => prev.filter(e => e.id !== emailId));
+        if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
+        setActionFeedback(`Moved to ${category}`);
+      }
+    } catch (error) {
+      console.error('Error moving email:', error);
+    }
+  };
+
+  const toggleStar = async (emailId, isStarred) => {
+    try {
+      const endpoint = isStarred ? 'unstar' : 'star';
+      await fetch(`/api/emails/${emailId}/${endpoint}`, { method: 'PUT' });
+      setEmails(prev => prev.map(e => e.id === emailId ? { ...e, isStarred: !isStarred } : e));
+      if (selectedEmail && selectedEmail.id === emailId) {
+        setSelectedEmail(prev => ({ ...prev, isStarred: !isStarred }));
+      }
+    } catch (error) {
+      console.error('Error toggling star:', error);
+    }
+  };
+
+  const bulkTrash = async () => {
+    for (const id of selectedEmails) {
+      await trashEmail(id);
+    }
+    setSelectedEmails(new Set());
+  };
+
+  const bulkArchive = async () => {
+    for (const id of selectedEmails) {
+      await archiveEmail(id);
+    }
+    setSelectedEmails(new Set());
+  };
+
+  const toggleSelect = (emailId, e) => {
+    e.stopPropagation();
+    setSelectedEmails(prev => {
+      const next = new Set(prev);
+      if (next.has(emailId)) next.delete(emailId);
+      else next.add(emailId);
+      return next;
+    });
+  };
+
+  const openReply = (replyAll = false) => {
+    if (!selectedEmail) return;
+    setComposeMode(replyAll ? 'replyAll' : 'reply');
+  };
+
+  const openForward = () => {
+    if (!selectedEmail) return;
+    setComposeMode('forward');
+  };
+
   const getImportanceBadge = (importance) => {
     if (!importance) return null;
     const classes = {
@@ -98,17 +186,27 @@ function EmailList({ accounts }) {
 
   return (
     <div>
-      <h2>Emails</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h2 style={{ margin: 0 }}>Emails</h2>
+        <button className="btn btn-primary" onClick={() => setComposeMode('compose')}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.95rem' }}>
+          ✏️ Compose
+        </button>
+      </div>
+
+      {actionFeedback && (
+        <div className="action-feedback">{actionFeedback}</div>
+      )}
 
       <div style={{display: 'flex', gap: '1rem', alignItems: 'flex-start'}}>
         {/* Email List Panel */}
         <div className="card" style={{flex: selectedEmail ? '0 0 40%' : '1', minWidth: 0}}>
-        <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
+        <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center'}}>
           <div>
             <label htmlFor="account-select">Account: </label>
-            <select 
+            <select
               id="account-select"
-              value={selectedAccount || ''} 
+              value={selectedAccount || ''}
               onChange={(e) => setSelectedAccount(Number(e.target.value))}
               style={{padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd'}}
             >
@@ -122,9 +220,9 @@ function EmailList({ accounts }) {
 
           <div>
             <label htmlFor="filter-select">Filter: </label>
-            <select 
+            <select
               id="filter-select"
-              value={filter} 
+              value={filter}
               onChange={(e) => setFilter(e.target.value)}
               style={{padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd'}}
             >
@@ -138,6 +236,14 @@ function EmailList({ accounts }) {
           <button onClick={fetchEmails} className="btn btn-primary">
             🔄 Refresh
           </button>
+
+          {selectedEmails.size > 0 && (
+            <div className="bulk-actions">
+              <span style={{ fontSize: '0.85rem', color: '#5f6368' }}>{selectedEmails.size} selected</span>
+              <button className="btn-icon" title="Delete selected" onClick={bulkTrash}>🗑️</button>
+              <button className="btn-icon" title="Archive selected" onClick={bulkArchive}>📥</button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -147,31 +253,53 @@ function EmailList({ accounts }) {
         ) : (
           <ul className="email-list">
             {emails.map(email => (
-              <li 
-                key={email.id} 
+              <li
+                key={email.id}
                 className={`email-item ${!email.isRead ? 'unread' : ''} ${email.importance ? email.importance.toLowerCase() : ''}`}
                 onClick={() => openEmail(email)}
                 style={{cursor: 'pointer', background: selectedEmail && selectedEmail.id === email.id ? '#eaf4fb' : ''}}
               >
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                  <div>
-                    <strong>{email.fromAddress}</strong>
-                    {getImportanceBadge(email.importance)}
-                    {email.isPhishing && <span style={{color: 'red', marginLeft: '0.5rem'}}>⚠️ PHISHING</span>}
-                    {email.isSpam && <span style={{color: 'orange', marginLeft: '0.5rem'}}>🗑️ SPAM</span>}
-                  </div>
-                  <div style={{fontSize: '0.9rem', color: '#7f8c8d'}}>
-                    {new Date(email.receivedDate).toLocaleString()}
+                <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                  <input
+                    type="checkbox"
+                    checked={selectedEmails.has(email.id)}
+                    onChange={(e) => toggleSelect(email.id, e)}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ cursor: 'pointer', accentColor: '#1a73e8' }}
+                  />
+                  <span
+                    className="star-btn"
+                    onClick={(e) => { e.stopPropagation(); toggleStar(email.id, email.isStarred); }}
+                    title={email.isStarred ? 'Unstar' : 'Star'}
+                  >
+                    {email.isStarred ? '⭐' : '☆'}
+                  </span>
+                  <div style={{flex: 1, minWidth: 0}}>
+                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                      <div>
+                        <strong>{email.fromAddress}</strong>
+                        {getImportanceBadge(email.importance)}
+                        {email.isPhishing && <span style={{color: 'red', marginLeft: '0.5rem'}}>⚠️ PHISHING</span>}
+                        {email.isSpam && <span style={{color: 'orange', marginLeft: '0.5rem'}}>🗑️ SPAM</span>}
+                      </div>
+                      <div style={{fontSize: '0.9rem', color: '#7f8c8d', display: 'flex', alignItems: 'center', gap: '8px'}}>
+                        {new Date(email.receivedDate).toLocaleString()}
+                        <span className="email-item-actions" onClick={e => e.stopPropagation()}>
+                          <button className="btn-icon-sm" title="Archive" onClick={() => archiveEmail(email.id)}>📥</button>
+                          <button className="btn-icon-sm" title="Delete" onClick={() => trashEmail(email.id)}>🗑️</button>
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{marginTop: '0.5rem', fontWeight: email.isRead ? 'normal' : 'bold'}}>
+                      {email.subject}
+                    </div>
+                    {email.dueDate && (
+                      <div style={{marginTop: '0.5rem', color: '#e74c3c', fontSize: '0.9rem'}}>
+                        📅 Due: {new Date(email.dueDate).toLocaleDateString()}
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div style={{marginTop: '0.5rem', fontWeight: email.isRead ? 'normal' : 'bold'}}>
-                  {email.subject}
-                </div>
-                {email.dueDate && (
-                  <div style={{marginTop: '0.5rem', color: '#e74c3c', fontSize: '0.9rem'}}>
-                    📅 Due: {new Date(email.dueDate).toLocaleDateString()}
-                  </div>
-                )}
               </li>
             ))}
           </ul>
@@ -191,6 +319,44 @@ function EmailList({ accounts }) {
             overflow: 'hidden',
             maxHeight: 'calc(100vh - 140px)',
           }}>
+            {/* Toolbar */}
+            <div className="email-toolbar">
+              <div className="email-toolbar-left">
+                <button className="btn-icon" title="Archive" onClick={() => archiveEmail(selectedEmail.id)}>📥</button>
+                <button className="btn-icon" title="Delete" onClick={() => trashEmail(selectedEmail.id)}>🗑️</button>
+                <span className="toolbar-divider" />
+                <div className="move-dropdown">
+                  <button className="btn-icon" title="Move to...">📁</button>
+                  <div className="move-dropdown-content">
+                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED'].map(cat => (
+                      <button key={cat} onClick={() => moveEmail(selectedEmail.id, cat)}>{cat}</button>
+                    ))}
+                  </div>
+                </div>
+                <span className="toolbar-divider" />
+                <button className="btn-icon" title={selectedEmail.isStarred ? 'Unstar' : 'Star'}
+                  onClick={() => toggleStar(selectedEmail.id, selectedEmail.isStarred)}>
+                  {selectedEmail.isStarred ? '⭐' : '☆'}
+                </button>
+                <button className="btn-icon" title={selectedEmail.isRead ? 'Mark unread' : 'Mark read'}
+                  onClick={async () => {
+                    const endpoint = selectedEmail.isRead ? 'mark-unread' : 'mark-read';
+                    await fetch(`/api/emails/${selectedEmail.id}/${endpoint}`, { method: 'PUT' });
+                    setSelectedEmail(prev => ({ ...prev, isRead: !prev.isRead }));
+                    setEmails(prev => prev.map(e => e.id === selectedEmail.id ? { ...e, isRead: !selectedEmail.isRead } : e));
+                  }}>
+                  {selectedEmail.isRead ? '✉️' : '📭'}
+                </button>
+              </div>
+              <button
+                onClick={() => setSelectedEmail(null)}
+                title="Close"
+                className="btn-icon"
+              >
+                ✕
+              </button>
+            </div>
+
             {/* Gmail-style header bar */}
             <div style={{
               padding: '16px 24px',
@@ -236,20 +402,9 @@ function EmailList({ accounts }) {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => setSelectedEmail(null)}
-                title="Close"
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: '#5f6368', fontSize: '1.2rem', padding: '4px',
-                  borderRadius: '50%', lineHeight: 1, flexShrink: 0, marginLeft: '16px',
-                }}
-              >
-                ✕
-              </button>
             </div>
 
-            {/* Email body rendered in iframe — isolates email CSS from app CSS */}
+            {/* Email body rendered in iframe */}
             {emailLoading ? (
               <div style={{padding: '24px', color: '#5f6368'}}>Loading...</div>
             ) : (!selectedEmail.bodyHtml && !selectedEmail.bodyPlainText) ? (
@@ -300,8 +455,19 @@ function EmailList({ accounts }) {
               />
             )}
 
-            {/* Open in new tab button */}
-            <div style={{padding: '8px 24px', borderTop: '1px solid #e0e0e0', background: '#f8f9fa', display: 'flex', justifyContent: 'flex-end'}}>
+            {/* Reply / Forward / Open action bar */}
+            <div className="email-action-bar">
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="btn-action" onClick={() => openReply(false)}>
+                  ↩️ Reply
+                </button>
+                <button className="btn-action" onClick={() => openReply(true)}>
+                  ↩️↩️ Reply All
+                </button>
+                <button className="btn-action" onClick={openForward}>
+                  ↪️ Forward
+                </button>
+              </div>
               <button
                 onClick={() => {
                   const html = selectedEmail.bodyHtml || selectedEmail.bodyPlainText || '(No content)';
@@ -311,11 +477,7 @@ function EmailList({ accounts }) {
                   window.open(url, '_blank');
                   setTimeout(() => URL.revokeObjectURL(url), 60000);
                 }}
-                style={{
-                  background: 'none', border: '1px solid #dadce0', borderRadius: '4px',
-                  padding: '6px 16px', cursor: 'pointer', color: '#1a73e8',
-                  fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px',
-                }}
+                className="btn-action-secondary"
               >
                 ↗ Open in browser tab
               </button>
@@ -323,6 +485,36 @@ function EmailList({ accounts }) {
           </div>
         )}
       </div>
+
+      {/* Compose / Reply / Forward modal */}
+      {composeMode && (
+        <ComposeEmail
+          accounts={accounts}
+          onClose={() => setComposeMode(null)}
+          onSent={() => { setActionFeedback('Message sent!'); fetchEmails(); }}
+          replyTo={composeMode === 'reply' || composeMode === 'replyAll' ? {
+            emailId: selectedEmail.id,
+            accountId: selectedAccount,
+            to: selectedEmail.fromAddress,
+            cc: composeMode === 'replyAll' ? selectedEmail.ccAddresses || '' : '',
+            subject: selectedEmail.subject ? (selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`) : 'Re:',
+            fromName: selectedEmail.fromName,
+            date: selectedEmail.receivedDate ? new Date(selectedEmail.receivedDate).toLocaleString() : '',
+            originalText: selectedEmail.bodyPlainText || '',
+            replyAll: composeMode === 'replyAll'
+          } : null}
+          forwardEmail={composeMode === 'forward' ? {
+            emailId: selectedEmail.id,
+            accountId: selectedAccount,
+            subject: selectedEmail.subject || '',
+            fromAddress: selectedEmail.fromAddress || '',
+            toAddresses: selectedEmail.toAddresses || '',
+            receivedDate: selectedEmail.receivedDate,
+            bodyPlainText: selectedEmail.bodyPlainText || '',
+            bodyHtml: selectedEmail.bodyHtml || ''
+          } : null}
+        />
+      )}
     </div>
   );
 }
