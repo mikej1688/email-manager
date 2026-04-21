@@ -580,6 +580,8 @@ function EmailList({ accounts }) {
             accountId: selectedAccount,
             to: selectedEmail.fromAddress,
             cc: composeMode === 'replyAll' ? selectedEmail.ccAddresses || '' : '',
+            originalToAddresses: selectedEmail.toAddresses || '',
+            originalCcAddresses: selectedEmail.ccAddresses || '',
             subject: selectedEmail.subject ? (selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`) : 'Re:',
             fromName: selectedEmail.fromName,
             date: selectedEmail.receivedDate ? new Date(selectedEmail.receivedDate).toLocaleString() : '',

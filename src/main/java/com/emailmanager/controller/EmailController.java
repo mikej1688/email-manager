@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.time.LocalDateTime;
@@ -397,6 +398,7 @@ public class EmailController {
             @RequestBody Map<String, String> request) {
         return emailRepository.findById(id)
                 .<ResponseEntity<Map<String, String>>>map(email -> {
+                    String to = request.getOrDefault("to", email.getFromAddress());
                     String body = request.get("body");
                     String cc = request.getOrDefault("cc", "");
                     boolean replyAll = Boolean.parseBoolean(request.getOrDefault("replyAll", "false"));
@@ -411,17 +413,16 @@ public class EmailController {
                     boolean success;
                     if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
                         success = gmailService.replyToEmail(account, email.getMessageId(),
-                                email.getFromAddress(), email.getToAddresses(),
+                                to, email.getToAddresses(),
                                 email.getCcAddresses(), email.getSubject(), body, replyAll, isHtml);
                     } else {
                         // For IMAP, send as a new email with Re: prefix
                         String replySubject = email.getSubject().startsWith("Re:") ? email.getSubject()
                                 : "Re: " + email.getSubject();
-                        String to = replyAll
-                                ? email.getFromAddress() + ","
-                                        + (email.getToAddresses() != null ? email.getToAddresses() : "")
-                                : email.getFromAddress();
-                        success = imapEmailService.sendEmail(account, to, replySubject, body);
+                        String replyRecipients = replyAll
+                                ? mergeReplyAllRecipients(to, email.getToAddresses(), account.getEmailAddress())
+                                : to;
+                        success = imapEmailService.sendEmail(account, replyRecipients, replySubject, body);
                     }
 
                     Map<String, String> result = new HashMap<>();
@@ -430,9 +431,8 @@ public class EmailController {
                         String replySubjectSaved = email.getSubject().startsWith("Re:") ? email.getSubject()
                                 : "Re: " + email.getSubject();
                         String replyTo = replyAll
-                                ? email.getFromAddress()
-                                        + (email.getToAddresses() != null ? "," + email.getToAddresses() : "")
-                                : email.getFromAddress();
+                                ? mergeReplyAllRecipients(to, email.getToAddresses(), account.getEmailAddress())
+                                : to;
                         Email sent = new Email();
                         sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
@@ -527,6 +527,48 @@ public class EmailController {
                     }
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    private String mergeReplyAllRecipients(String editedTo, String originalTo, String accountEmailAddress) {
+        LinkedHashMap<String, String> recipients = new LinkedHashMap<>();
+        addRecipients(recipients, editedTo, false, accountEmailAddress);
+        addRecipients(recipients, originalTo, true, accountEmailAddress);
+        return String.join(", ", recipients.values());
+    }
+
+    private void addRecipients(LinkedHashMap<String, String> recipients, String recipientList,
+            boolean skipOwnAddress, String accountEmailAddress) {
+        if (recipientList == null || recipientList.isBlank()) {
+            return;
+        }
+
+        for (String part : recipientList.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+
+            String normalized = normalizeRecipient(trimmed);
+            if (skipOwnAddress && normalized.equals(normalizeRecipient(accountEmailAddress))) {
+                continue;
+            }
+
+            recipients.putIfAbsent(normalized, trimmed);
+        }
+    }
+
+    private String normalizeRecipient(String recipient) {
+        if (recipient == null) {
+            return "";
+        }
+
+        String trimmed = recipient.trim();
+        int start = trimmed.indexOf('<');
+        int end = trimmed.indexOf('>');
+        if (start >= 0 && end > start) {
+            trimmed = trimmed.substring(start + 1, end).trim();
+        }
+        return trimmed.toLowerCase();
     }
 
     private String mapCategoryToGmailLabel(Email.EmailCategory category) {

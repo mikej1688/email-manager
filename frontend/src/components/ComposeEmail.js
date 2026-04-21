@@ -1,8 +1,51 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
+  const getNormalizedRecipient = (recipient) => {
+    if (!recipient) return '';
+    const trimmed = recipient.trim();
+    const start = trimmed.indexOf('<');
+    const end = trimmed.indexOf('>');
+    if (start >= 0 && end > start) {
+      return trimmed.slice(start + 1, end).trim().toLowerCase();
+    }
+    return trimmed.toLowerCase();
+  };
+
+  const buildReplyAllCc = (editedTo, originalTo, originalCc, accountEmailAddress) => {
+    const toRecipients = new Set();
+    (editedTo || '').split(',').forEach((part) => {
+      const normalized = getNormalizedRecipient(part);
+      if (normalized) {
+        toRecipients.add(normalized);
+      }
+    });
+
+    const ownAddress = getNormalizedRecipient(accountEmailAddress);
+    const deduped = new Map();
+    [originalTo, originalCc].forEach((recipientList) => {
+      (recipientList || '').split(',').forEach((part) => {
+        const trimmed = part.trim();
+        const normalized = getNormalizedRecipient(trimmed);
+        if (!normalized || normalized === ownAddress || toRecipients.has(normalized)) {
+          return;
+        }
+        if (!deduped.has(normalized)) {
+          deduped.set(normalized, trimmed);
+        }
+      });
+    });
+
+    return Array.from(deduped.values()).join(', ');
+  };
+
+  const currentAccount = accounts.find((account) => account.id === replyTo?.accountId);
+  const initialReplyAllCc = replyTo?.replyAll
+    ? buildReplyAllCc(replyTo.to, replyTo.originalToAddresses, replyTo.originalCcAddresses, currentAccount?.emailAddress)
+    : (replyTo?.cc || '');
+
   const [to, setTo] = useState(replyTo ? replyTo.to : (forwardEmail ? '' : ''));
-  const [cc, setCc] = useState(replyTo ? (replyTo.cc || '') : '');
+  const [cc, setCc] = useState(replyTo ? initialReplyAllCc : '');
   const [subject, setSubject] = useState(
     replyTo ? replyTo.subject :
     forwardEmail ? `Fwd: ${forwardEmail.subject || ''}` : ''
@@ -21,7 +64,22 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
   );
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const [showCc, setShowCc] = useState(!!cc);
+  const [showCc, setShowCc] = useState(!!initialReplyAllCc || !!replyTo?.replyAll);
+  const [ccEdited, setCcEdited] = useState(false);
+
+  useEffect(() => {
+    if (!replyTo?.replyAll || ccEdited) {
+      return;
+    }
+
+    const recalculatedCc = buildReplyAllCc(
+      to,
+      replyTo.originalToAddresses,
+      replyTo.originalCcAddresses,
+      currentAccount?.emailAddress
+    );
+    setCc(recalculatedCc);
+  }, [ccEdited, currentAccount?.emailAddress, replyTo, to]);
 
   const handleSend = async () => {
     if (!to.trim()) { setError('Please enter a recipient'); return; }
@@ -37,6 +95,7 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
       if (replyTo && replyTo.emailId) {
         url = `/api/emails/${replyTo.emailId}/reply`;
         payload = {
+          to: to,
           body: body,
           cc: cc,
           replyAll: String(replyTo.replyAll || false),
@@ -116,7 +175,6 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
                 value={to}
                 onChange={e => setTo(e.target.value)}
                 placeholder="recipient@example.com"
-                disabled={!!replyTo}
                 style={{ flex: 1 }}
               />
               {!showCc && (
@@ -131,7 +189,10 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
               <input
                 type="text"
                 value={cc}
-                onChange={e => setCc(e.target.value)}
+                onChange={e => {
+                  setCcEdited(true);
+                  setCc(e.target.value);
+                }}
                 placeholder="cc@example.com"
               />
             </div>

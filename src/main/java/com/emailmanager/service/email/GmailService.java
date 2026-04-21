@@ -19,6 +19,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -166,7 +167,7 @@ public class GmailService implements EmailProviderService {
      * Reply to an email via Gmail API, threading the reply into the conversation.
      */
     public boolean replyToEmail(EmailAccount account, String originalMessageId,
-            String originalFrom, String originalTo, String originalCc,
+            String replyToAddress, String originalTo, String originalCc,
             String originalSubject, String body, boolean replyAll, boolean isHtml) {
         try {
             Gmail service = getGmailService(account);
@@ -186,32 +187,10 @@ public class GmailService implements EmailProviderService {
                 }
             }
 
-            String to = originalFrom;
+            String to = replyToAddress;
             String cc = "";
             if (replyAll) {
-                // Include original To and Cc, but exclude the sender's own address
-                StringBuilder ccBuilder = new StringBuilder();
-                if (originalTo != null && !originalTo.isEmpty()) {
-                    for (String addr : originalTo.split(",")) {
-                        String trimmed = addr.trim();
-                        if (!trimmed.isEmpty() && !trimmed.equalsIgnoreCase(account.getEmailAddress())) {
-                            if (ccBuilder.length() > 0)
-                                ccBuilder.append(", ");
-                            ccBuilder.append(trimmed);
-                        }
-                    }
-                }
-                if (originalCc != null && !originalCc.isEmpty()) {
-                    for (String addr : originalCc.split(",")) {
-                        String trimmed = addr.trim();
-                        if (!trimmed.isEmpty() && !trimmed.equalsIgnoreCase(account.getEmailAddress())) {
-                            if (ccBuilder.length() > 0)
-                                ccBuilder.append(", ");
-                            ccBuilder.append(trimmed);
-                        }
-                    }
-                }
-                cc = ccBuilder.toString();
+                cc = buildReplyAllCc(replyToAddress, originalTo, originalCc, account.getEmailAddress());
             }
 
             String replySubject = originalSubject != null && originalSubject.startsWith("Re:") ? originalSubject
@@ -490,5 +469,64 @@ public class GmailService implements EmailProviderService {
             return from.substring(0, from.indexOf("<")).trim();
         }
         return from;
+    }
+
+    private String buildReplyAllCc(String to, String originalTo, String originalCc, String accountEmailAddress) {
+        LinkedHashMap<String, String> recipients = new LinkedHashMap<>();
+        LinkedHashSet<String> toRecipients = new LinkedHashSet<>();
+
+        collectRecipientKeys(toRecipients, to);
+        appendUniqueRecipients(recipients, originalTo, toRecipients, accountEmailAddress);
+        appendUniqueRecipients(recipients, originalCc, toRecipients, accountEmailAddress);
+
+        return String.join(", ", recipients.values());
+    }
+
+    private void appendUniqueRecipients(LinkedHashMap<String, String> recipients, String recipientList,
+            LinkedHashSet<String> excludedRecipients, String accountEmailAddress) {
+        if (recipientList == null || recipientList.isBlank()) {
+            return;
+        }
+
+        String ownAddress = normalizeRecipient(accountEmailAddress);
+        for (String part : recipientList.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+
+            String normalized = normalizeRecipient(trimmed);
+            if (normalized.isEmpty() || normalized.equals(ownAddress) || excludedRecipients.contains(normalized)) {
+                continue;
+            }
+            recipients.putIfAbsent(normalized, trimmed);
+        }
+    }
+
+    private void collectRecipientKeys(LinkedHashSet<String> recipients, String recipientList) {
+        if (recipientList == null || recipientList.isBlank()) {
+            return;
+        }
+
+        for (String part : recipientList.split(",")) {
+            String normalized = normalizeRecipient(part);
+            if (!normalized.isEmpty()) {
+                recipients.add(normalized);
+            }
+        }
+    }
+
+    private String normalizeRecipient(String recipient) {
+        if (recipient == null) {
+            return "";
+        }
+
+        String trimmed = recipient.trim();
+        int start = trimmed.indexOf('<');
+        int end = trimmed.indexOf('>');
+        if (start >= 0 && end > start) {
+            trimmed = trimmed.substring(start + 1, end).trim();
+        }
+        return trimmed.toLowerCase();
     }
 }

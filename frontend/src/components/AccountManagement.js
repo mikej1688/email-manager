@@ -195,6 +195,9 @@ function AccountManagement({ onAccountsChange }) {
 
             <div className="form-group">
               <label>Provider *</label>
+              <p style={{fontSize: '0.85rem', color: '#666', margin: '0.25rem 0 0.5rem'}}>
+                Gmail supports OAuth in this app. Other providers use standard IMAP/SMTP settings. Facebook client credentials are not supported for mailbox access.
+              </p>
               <select 
                 value={formData.provider}
                 onChange={(e) => setFormData({...formData, provider: e.target.value})}
@@ -225,6 +228,26 @@ function AccountManagement({ onAccountsChange }) {
                     value={formData.imapPort}
                     onChange={(e) => setFormData({...formData, imapPort: e.target.value})}
                     placeholder="993"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>SMTP Server</label>
+                  <input 
+                    type="text"
+                    value={formData.smtpServer}
+                    onChange={(e) => setFormData({...formData, smtpServer: e.target.value})}
+                    placeholder="smtp.example.com"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>SMTP Port</label>
+                  <input 
+                    type="number"
+                    value={formData.smtpPort}
+                    onChange={(e) => setFormData({...formData, smtpPort: e.target.value})}
+                    placeholder="587"
                   />
                 </div>
 
