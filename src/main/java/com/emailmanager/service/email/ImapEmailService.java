@@ -26,8 +26,7 @@ public class ImapEmailService implements EmailProviderService {
     @Override
     public boolean authenticate(EmailAccount account) {
         try {
-            Store store = getImapStore(account);
-            store.connect();
+            Store store = openImapStore(account);
             boolean connected = store.isConnected();
             store.close();
             log.info("Successfully authenticated IMAP account: {}", account.getEmailAddress());
@@ -45,8 +44,7 @@ public class ImapEmailService implements EmailProviderService {
         Folder inbox = null;
 
         try {
-            store = getImapStore(account);
-            store.connect();
+            store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_ONLY);
@@ -77,8 +75,7 @@ public class ImapEmailService implements EmailProviderService {
         Folder inbox = null;
 
         try {
-            store = getImapStore(account);
-            store.connect();
+            store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
@@ -103,8 +100,7 @@ public class ImapEmailService implements EmailProviderService {
         Folder inbox = null;
 
         try {
-            store = getImapStore(account);
-            store.connect();
+            store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
@@ -130,8 +126,7 @@ public class ImapEmailService implements EmailProviderService {
         Folder targetFolder = null;
 
         try {
-            store = getImapStore(account);
-            store.connect();
+            store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
@@ -165,8 +160,7 @@ public class ImapEmailService implements EmailProviderService {
         Folder inbox = null;
 
         try {
-            store = getImapStore(account);
-            store.connect();
+            store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
@@ -225,7 +219,7 @@ public class ImapEmailService implements EmailProviderService {
         return authenticate(account);
     }
 
-    private Store getImapStore(EmailAccount account) throws MessagingException {
+    private Store openImapStore(EmailAccount account) throws MessagingException {
         Properties props = new Properties();
         props.put("mail.store.protocol", "imaps");
         props.put("mail.imap.host", account.getImapServer());

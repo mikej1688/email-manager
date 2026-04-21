@@ -1,11 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
 function AccountManagement({ onAccountsChange }) {
-  const [accounts, setAccounts] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [oauthEmail, setOauthEmail] = useState('');
-  const [showOAuthForm, setShowOAuthForm] = useState(false);
-  const [formData, setFormData] = useState({
+  const emptyForm = {
     emailAddress: '',
     displayName: '',
     provider: 'GMAIL',
@@ -14,7 +10,23 @@ function AccountManagement({ onAccountsChange }) {
     smtpServer: '',
     smtpPort: '',
     encryptedPassword: ''
-  });
+  };
+
+  const yahooDefaults = {
+    provider: 'YAHOO',
+    imapServer: 'imap.mail.yahoo.com',
+    imapPort: '993',
+    smtpServer: 'smtp.mail.yahoo.com',
+    smtpPort: '587'
+  };
+
+  const [accounts, setAccounts] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [oauthEmail, setOauthEmail] = useState('');
+  const [showOAuthForm, setShowOAuthForm] = useState(false);
+  const [formData, setFormData] = useState(emptyForm);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testConnectionResult, setTestConnectionResult] = useState(null);
 
   useEffect(() => {
     fetchAccounts();
@@ -81,19 +93,83 @@ function AccountManagement({ onAccountsChange }) {
         body: JSON.stringify(formData)
       });
       setShowForm(false);
-      setFormData({
-        emailAddress: '',
-        displayName: '',
-        provider: 'GMAIL',
-        imapServer: '',
-        imapPort: '',
-        smtpServer: '',
-        smtpPort: '',
-        encryptedPassword: ''
-      });
+      setFormData(emptyForm);
+      setTestConnectionResult(null);
       fetchAccounts();
     } catch (error) {
       console.error('Error adding account:', error);
+    }
+  };
+
+  const openYahooConnect = () => {
+    setShowForm(true);
+    setShowOAuthForm(false);
+    setTestConnectionResult(null);
+    setFormData((prev) => ({
+      ...emptyForm,
+      ...yahooDefaults,
+      emailAddress: prev.provider === 'YAHOO' ? prev.emailAddress : '',
+      displayName: prev.provider === 'YAHOO' ? prev.displayName : '',
+      encryptedPassword: prev.provider === 'YAHOO' ? prev.encryptedPassword : ''
+    }));
+  };
+
+  const handleProviderChange = (provider) => {
+    setTestConnectionResult(null);
+    if (provider === 'YAHOO') {
+      setFormData((prev) => ({ ...prev, ...yahooDefaults }));
+      return;
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      provider,
+      imapServer: prev.provider === 'YAHOO' ? '' : prev.imapServer,
+      imapPort: prev.provider === 'YAHOO' ? '' : prev.imapPort,
+      smtpServer: prev.provider === 'YAHOO' ? '' : prev.smtpServer,
+      smtpPort: prev.provider === 'YAHOO' ? '' : prev.smtpPort
+    }));
+  };
+
+  const handleDraftTestConnection = async () => {
+    if (!formData.emailAddress || !formData.displayName) {
+      setTestConnectionResult({ success: false, message: 'Enter email address and display name first.' });
+      return;
+    }
+
+    if (formData.provider !== 'GMAIL' && !formData.encryptedPassword) {
+      setTestConnectionResult({ success: false, message: 'Enter the account password or app password first.' });
+      return;
+    }
+
+    setTestingConnection(true);
+    setTestConnectionResult(null);
+
+    try {
+      const response = await fetch('/api/accounts/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+      });
+
+      if (!response.ok) {
+        setTestConnectionResult({ success: false, message: 'Connection test failed.' });
+        return;
+      }
+
+      const data = await response.json();
+      const connected = typeof data === 'boolean' ? data : !!data.success;
+      setTestConnectionResult({
+        success: connected,
+        message: typeof data === 'boolean'
+          ? (connected ? 'Connection successful.' : 'Could not connect with these settings.')
+          : (data.message || (connected ? 'Connection successful.' : 'Could not connect with these settings.'))
+      });
+    } catch (error) {
+      console.error('Error testing connection:', error);
+      setTestConnectionResult({ success: false, message: 'Connection test failed.' });
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -133,12 +209,23 @@ function AccountManagement({ onAccountsChange }) {
           >
             {showOAuthForm ? 'Cancel' : '+ Connect Gmail (OAuth)'}
           </button>
+
+          <button
+            className="btn btn-success"
+            onClick={openYahooConnect}
+          >
+            + Connect Yahoo
+          </button>
           
           <button 
             className="btn btn-secondary" 
             onClick={() => {
               setShowForm(!showForm);
               setShowOAuthForm(false);
+              if (!showForm) {
+                setFormData(emptyForm);
+                setTestConnectionResult(null);
+              }
             }}
           >
             {showForm ? 'Cancel' : '+ Add Other Account'}
@@ -179,7 +266,10 @@ function AccountManagement({ onAccountsChange }) {
                 type="email" 
                 required
                 value={formData.emailAddress}
-                onChange={(e) => setFormData({...formData, emailAddress: e.target.value})}
+                onChange={(e) => {
+                  setTestConnectionResult(null);
+                  setFormData({...formData, emailAddress: e.target.value});
+                }}
               />
             </div>
 
@@ -189,7 +279,10 @@ function AccountManagement({ onAccountsChange }) {
                 type="text" 
                 required
                 value={formData.displayName}
-                onChange={(e) => setFormData({...formData, displayName: e.target.value})}
+                onChange={(e) => {
+                  setTestConnectionResult(null);
+                  setFormData({...formData, displayName: e.target.value});
+                }}
               />
             </div>
 
@@ -200,7 +293,7 @@ function AccountManagement({ onAccountsChange }) {
               </p>
               <select 
                 value={formData.provider}
-                onChange={(e) => setFormData({...formData, provider: e.target.value})}
+                onChange={(e) => handleProviderChange(e.target.value)}
               >
                 <option value="GMAIL">Gmail</option>
                 <option value="YAHOO">Yahoo</option>
@@ -211,12 +304,20 @@ function AccountManagement({ onAccountsChange }) {
 
             {formData.provider !== 'GMAIL' && (
               <>
+                {formData.provider === 'YAHOO' && (
+                  <div style={{marginBottom: '1rem', padding: '0.75rem', background: '#fff8e1', border: '1px solid #ffecb3', borderRadius: '4px', color: '#6d4c41'}}>
+                    Yahoo uses IMAP and SMTP in this app. Use your Yahoo email address and a Yahoo app password, not your normal sign-in password.
+                  </div>
+                )}
                 <div className="form-group">
                   <label>IMAP Server</label>
                   <input 
                     type="text"
                     value={formData.imapServer}
-                    onChange={(e) => setFormData({...formData, imapServer: e.target.value})}
+                    onChange={(e) => {
+                      setTestConnectionResult(null);
+                      setFormData({...formData, imapServer: e.target.value});
+                    }}
                     placeholder="imap.example.com"
                   />
                 </div>
@@ -226,7 +327,10 @@ function AccountManagement({ onAccountsChange }) {
                   <input 
                     type="number"
                     value={formData.imapPort}
-                    onChange={(e) => setFormData({...formData, imapPort: e.target.value})}
+                    onChange={(e) => {
+                      setTestConnectionResult(null);
+                      setFormData({...formData, imapPort: e.target.value});
+                    }}
                     placeholder="993"
                   />
                 </div>
@@ -236,7 +340,10 @@ function AccountManagement({ onAccountsChange }) {
                   <input 
                     type="text"
                     value={formData.smtpServer}
-                    onChange={(e) => setFormData({...formData, smtpServer: e.target.value})}
+                    onChange={(e) => {
+                      setTestConnectionResult(null);
+                      setFormData({...formData, smtpServer: e.target.value});
+                    }}
                     placeholder="smtp.example.com"
                   />
                 </div>
@@ -246,7 +353,10 @@ function AccountManagement({ onAccountsChange }) {
                   <input 
                     type="number"
                     value={formData.smtpPort}
-                    onChange={(e) => setFormData({...formData, smtpPort: e.target.value})}
+                    onChange={(e) => {
+                      setTestConnectionResult(null);
+                      setFormData({...formData, smtpPort: e.target.value});
+                    }}
                     placeholder="587"
                   />
                 </div>
@@ -256,15 +366,43 @@ function AccountManagement({ onAccountsChange }) {
                   <input 
                     type="password"
                     value={formData.encryptedPassword}
-                    onChange={(e) => setFormData({...formData, encryptedPassword: e.target.value})}
+                    onChange={(e) => {
+                      setTestConnectionResult(null);
+                      setFormData({...formData, encryptedPassword: e.target.value});
+                    }}
                   />
                 </div>
               </>
             )}
 
-            <button type="submit" className="btn btn-success">
-              Add Account
-            </button>
+            {showForm && formData.provider !== 'GMAIL' && testConnectionResult && (
+              <div style={{
+                marginBottom: '1rem',
+                padding: '0.75rem',
+                borderRadius: '4px',
+                background: testConnectionResult.success ? '#e8f5e9' : '#fdecea',
+                border: `1px solid ${testConnectionResult.success ? '#81c784' : '#f5c2c0'}`,
+                color: testConnectionResult.success ? '#2e7d32' : '#b3261e'
+              }}>
+                {testConnectionResult.message}
+              </div>
+            )}
+
+            <div style={{display: 'flex', gap: '0.75rem', alignItems: 'center'}}>
+              {formData.provider !== 'GMAIL' && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleDraftTestConnection}
+                  disabled={testingConnection}
+                >
+                  {testingConnection ? 'Testing...' : 'Test Connection'}
+                </button>
+              )}
+              <button type="submit" className="btn btn-success">
+                Add Account
+              </button>
+            </div>
           </form>
         )}
 

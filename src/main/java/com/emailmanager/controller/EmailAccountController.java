@@ -8,7 +8,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * REST API controller for email accounts
@@ -18,6 +20,11 @@ import java.util.List;
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
 public class EmailAccountController {
+
+    private static final String YAHOO_IMAP_SERVER = "imap.mail.yahoo.com";
+    private static final int YAHOO_IMAP_PORT = 993;
+    private static final String YAHOO_SMTP_SERVER = "smtp.mail.yahoo.com";
+    private static final int YAHOO_SMTP_PORT = 587;
 
     private final EmailAccountRepository emailAccountRepository;
     private final EmailSyncService emailSyncService;
@@ -55,6 +62,7 @@ public class EmailAccountController {
      */
     @PostMapping
     public ResponseEntity<EmailAccount> addAccount(@RequestBody EmailAccount account) {
+        applyProviderDefaults(account);
         EmailAccount savedAccount = emailAccountRepository.save(account);
         return ResponseEntity.status(HttpStatus.CREATED).body(savedAccount);
     }
@@ -70,6 +78,7 @@ public class EmailAccountController {
         return emailAccountRepository.findById(id)
                 .map(existingAccount -> {
                     account.setId(id);
+                    applyProviderDefaults(account);
                     EmailAccount updated = emailAccountRepository.save(account);
                     return ResponseEntity.ok(updated);
                 })
@@ -91,6 +100,26 @@ public class EmailAccountController {
 
     /**
      * Test connection to email account
+     */
+    @PostMapping("/test-connection")
+    public ResponseEntity<Map<String, Object>> testConnectionForDraft(@RequestBody EmailAccount account) {
+        applyProviderDefaults(account);
+        boolean connected = emailSyncService.testConnection(account);
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", connected);
+        if (connected) {
+            result.put("message", "Connection successful.");
+        } else if (account.getProvider() == EmailAccount.EmailProvider.YAHOO) {
+            result.put("message",
+                    "Yahoo rejected the login. Use a Yahoo app password instead of your regular sign-in password, then try again.");
+        } else {
+            result.put("message", "Could not connect with these settings.");
+        }
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Test connection to saved email account
      */
     @PostMapping("/{id}/test-connection")
     public ResponseEntity<Boolean> testConnection(@PathVariable Long id) {
@@ -122,5 +151,24 @@ public class EmailAccountController {
     public ResponseEntity<String> syncAllAccounts() {
         emailSyncService.syncAllAccounts();
         return ResponseEntity.ok("Sync initiated for all accounts");
+    }
+
+    private void applyProviderDefaults(EmailAccount account) {
+        if (account.getProvider() != EmailAccount.EmailProvider.YAHOO) {
+            return;
+        }
+
+        if (account.getImapServer() == null || account.getImapServer().isBlank()) {
+            account.setImapServer(YAHOO_IMAP_SERVER);
+        }
+        if (account.getImapPort() == null || account.getImapPort() <= 0) {
+            account.setImapPort(YAHOO_IMAP_PORT);
+        }
+        if (account.getSmtpServer() == null || account.getSmtpServer().isBlank()) {
+            account.setSmtpServer(YAHOO_SMTP_SERVER);
+        }
+        if (account.getSmtpPort() == null || account.getSmtpPort() <= 0) {
+            account.setSmtpPort(YAHOO_SMTP_PORT);
+        }
     }
 }
