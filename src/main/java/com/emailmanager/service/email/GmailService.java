@@ -16,6 +16,8 @@ import jakarta.mail.Session;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -367,12 +369,14 @@ public class GmailService implements EmailProviderService {
         if (mimeType.equals("text/html")) {
             String data = part.getBody() != null ? part.getBody().getData() : null;
             if (data != null) {
-                email.setBodyHtml(new String(Base64.getUrlDecoder().decode(data)));
+                Charset charset = extractCharset(part);
+                email.setBodyHtml(new String(Base64.getUrlDecoder().decode(data), charset));
             }
         } else if (mimeType.equals("text/plain")) {
             String data = part.getBody() != null ? part.getBody().getData() : null;
             if (data != null && email.getBodyPlainText() == null) {
-                email.setBodyPlainText(new String(Base64.getUrlDecoder().decode(data)));
+                Charset charset = extractCharset(part);
+                email.setBodyPlainText(new String(Base64.getUrlDecoder().decode(data), charset));
             }
         } else if (mimeType.startsWith("multipart/")) {
             if (part.getParts() != null) {
@@ -422,10 +426,36 @@ public class GmailService implements EmailProviderService {
             // Simple body with no explicit mimeType — treat as plain text
             String data = part.getBody() != null ? part.getBody().getData() : null;
             if (data != null && email.getBodyPlainText() == null) {
-                email.setBodyPlainText(new String(Base64.getUrlDecoder().decode(data)));
+                email.setBodyPlainText(new String(Base64.getUrlDecoder().decode(data), StandardCharsets.UTF_8));
             }
         }
         // Other types (application/pdf, etc.) are intentionally skipped
+    }
+
+    /**
+     * Extracts the charset from a MIME part's Content-Type header (e.g. "text/html;
+     * charset=iso-8859-1").
+     * Falls back to UTF-8 if the header is absent or the charset is unrecognised.
+     */
+    private Charset extractCharset(com.google.api.services.gmail.model.MessagePart part) {
+        if (part.getHeaders() != null) {
+            for (com.google.api.services.gmail.model.MessagePartHeader h : part.getHeaders()) {
+                if ("content-type".equalsIgnoreCase(h.getName()) && h.getValue() != null) {
+                    for (String param : h.getValue().split(";")) {
+                        String trimmed = param.trim();
+                        if (trimmed.toLowerCase().startsWith("charset=")) {
+                            String name = trimmed.substring("charset=".length()).replaceAll("[\"']", "").trim();
+                            try {
+                                return Charset.forName(name);
+                            } catch (Exception ignored) {
+                                // Unrecognised charset — fall through to UTF-8
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return StandardCharsets.UTF_8;
     }
 
     /**
