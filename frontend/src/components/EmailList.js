@@ -401,7 +401,7 @@ function EmailList({ accounts }) {
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
-            maxHeight: 'calc(100vh - 140px)',
+            height: 'calc(100vh - 140px)',
           }}>
             {/* Toolbar */}
             <div className="email-toolbar">
@@ -533,8 +533,7 @@ function EmailList({ accounts }) {
                   flex: 1,
                   width: '100%',
                   border: 'none',
-                  minHeight: '500px',
-                  height: 'calc(100vh - 300px)',
+                  minHeight: 0,
                 }}
               />
             )}
