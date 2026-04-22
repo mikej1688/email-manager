@@ -82,6 +82,17 @@
   color: white;
 }
 
+.btn-secondary {
+  background-color: #eef2f7;
+  color: #2c3e50;
+  border: 1px solid #d6dde8;
+}
+
+.btn-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .btn-danger {
   background-color: #e74c3c;
   color: white;
@@ -95,6 +106,34 @@
 .email-list {
   list-style: none;
   padding: 0;
+}
+
+.email-list-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.email-page-summary {
+  color: #5f6368;
+  font-size: 0.9rem;
+}
+
+.pagination-controls {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.pagination-status {
+  color: #5f6368;
+  font-size: 0.9rem;
 }
 
 .email-item {

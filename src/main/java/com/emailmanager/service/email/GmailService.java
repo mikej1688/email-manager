@@ -35,6 +35,7 @@ import java.util.Properties;
 public class GmailService implements EmailProviderService {
 
     private static final String APPLICATION_NAME = "Email Manager";
+    private static final int GMAIL_TIMEOUT_MS = 5000;
     private final OAuth2Service oAuth2Service;
 
     @Override
@@ -55,6 +56,12 @@ public class GmailService implements EmailProviderService {
     public List<Email> fetchNewEmails(EmailAccount account, int limit) {
         List<Email> emails = new ArrayList<>();
         try {
+            if (Thread.currentThread().isInterrupted()) {
+                log.info("Skipping Gmail fetch for {} because the sync thread was interrupted",
+                        account.getEmailAddress());
+                return emails;
+            }
+
             Gmail service = getGmailService(account);
 
             // List messages
@@ -66,6 +73,12 @@ public class GmailService implements EmailProviderService {
 
             if (messages != null && !messages.isEmpty()) {
                 for (Message message : messages) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        log.info("Stopping Gmail fetch loop for {} because the sync thread was interrupted",
+                                account.getEmailAddress());
+                        break;
+                    }
+
                     Message fullMessage = service.users().messages()
                             .get("me", message.getId())
                             .setFormat("full")
@@ -274,7 +287,11 @@ public class GmailService implements EmailProviderService {
             return new Gmail.Builder(
                     new NetHttpTransport(),
                     GsonFactory.getDefaultInstance(),
-                    credential)
+                    request -> {
+                        credential.initialize(request);
+                        request.setConnectTimeout(GMAIL_TIMEOUT_MS);
+                        request.setReadTimeout(GMAIL_TIMEOUT_MS);
+                    })
                     .setApplicationName(APPLICATION_NAME)
                     .build();
         } catch (Exception e) {

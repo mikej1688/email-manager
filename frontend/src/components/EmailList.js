@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ComposeEmail from './ComposeEmail';
 
 const POLL_INTERVAL_MS = 60000; // 60 seconds
+const EMAILS_PER_PAGE = 100;
 
 function EmailList({ accounts }) {
   const [emails, setEmails] = useState([]);
@@ -14,6 +15,7 @@ function EmailList({ accounts }) {
   const [selectedEmails, setSelectedEmails] = useState(new Set());
   const [actionFeedback, setActionFeedback] = useState('');
   const [newEmailCount, setNewEmailCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Stable refs so the polling interval doesn't go stale
   const selectedAccountRef = useRef(selectedAccount);
@@ -27,13 +29,18 @@ function EmailList({ accounts }) {
     if (accounts.length > 0 && !selectedAccount) {
       setSelectedAccount(accounts[0].id);
     }
-  }, [accounts]);
+  }, [accounts, selectedAccount]);
+
+  const totalPages = Math.max(1, Math.ceil(emails.length / EMAILS_PER_PAGE));
+  const currentPageStart = (currentPage - 1) * EMAILS_PER_PAGE;
+  const currentPageEmails = emails.slice(currentPageStart, currentPageStart + EMAILS_PER_PAGE);
+  const currentPageEmailIds = currentPageEmails.map(email => email.id);
+  const allCurrentPageSelected = currentPageEmailIds.length > 0
+    && currentPageEmailIds.every(emailId => selectedEmails.has(emailId));
 
   useEffect(() => {
-    if (selectedAccount) {
-      fetchEmails();
-    }
-  }, [selectedAccount, filter]);
+    setCurrentPage(prevPage => Math.min(prevPage, totalPages));
+  }, [totalPages]);
 
   // Auto-clear feedback
   useEffect(() => {
@@ -91,7 +98,7 @@ function EmailList({ accounts }) {
   }, []); // empty deps — uses refs to stay stable
 
   // Fetch local DB emails (no Gmail sync)
-  const fetchEmails = async (accountId = selectedAccount, currentFilter = filter) => {
+  const fetchEmails = useCallback(async (accountId = selectedAccount, currentFilter = filter, resetPage = true) => {
     if (!accountId) return;
     setLoading(true);
     setNewEmailCount(0);
@@ -106,12 +113,19 @@ function EmailList({ accounts }) {
       const data = await response.json();
       setEmails(data.content || []);
       setSelectedEmails(new Set());
+      if (resetPage) setCurrentPage(1);
     } catch (error) {
       console.error('Error fetching emails:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [filter, selectedAccount]);
+
+  useEffect(() => {
+    if (selectedAccount) {
+      fetchEmails();
+    }
+  }, [fetchEmails, selectedAccount]);
 
   // Sync from Gmail then reload local list
   const syncAndRefresh = async () => {
@@ -123,7 +137,7 @@ function EmailList({ accounts }) {
     } catch (error) {
       console.error('Sync error:', error);
     }
-    await fetchEmails();
+    await fetchEmails(selectedAccount, filter, false);
   };
 
   const openEmail = async (email) => {
@@ -166,6 +180,11 @@ function EmailList({ accounts }) {
       const response = await fetch(`/api/emails/${emailId}/trash`, { method: 'PUT' });
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
+        setSelectedEmails(prev => {
+          const next = new Set(prev);
+          next.delete(emailId);
+          return next;
+        });
         if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
         setActionFeedback('Moved to Trash');
       }
@@ -180,6 +199,11 @@ function EmailList({ accounts }) {
       const response = await fetch(`/api/emails/${emailId}/archive`, { method: 'PUT' });
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
+        setSelectedEmails(prev => {
+          const next = new Set(prev);
+          next.delete(emailId);
+          return next;
+        });
         if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
         setActionFeedback('Archived');
       }
@@ -193,6 +217,11 @@ function EmailList({ accounts }) {
       const response = await fetch(`/api/emails/${emailId}/move?category=${category}`, { method: 'PUT' });
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
+        setSelectedEmails(prev => {
+          const next = new Set(prev);
+          next.delete(emailId);
+          return next;
+        });
         if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
         setActionFeedback(`Moved to ${category}`);
       }
@@ -226,6 +255,28 @@ function EmailList({ accounts }) {
       await archiveEmail(id);
     }
     setSelectedEmails(new Set());
+  };
+
+  const toggleSelectAllOnPage = () => {
+    setSelectedEmails(prev => {
+      const next = new Set(prev);
+
+      if (allCurrentPageSelected) {
+        currentPageEmailIds.forEach(emailId => next.delete(emailId));
+      } else {
+        currentPageEmailIds.forEach(emailId => next.add(emailId));
+      }
+
+      return next;
+    });
+  };
+
+  const goToPreviousPage = () => {
+    setCurrentPage(prevPage => Math.max(prevPage - 1, 1));
+  };
+
+  const goToNextPage = () => {
+    setCurrentPage(prevPage => Math.min(prevPage + 1, totalPages));
   };
 
   const toggleSelect = (emailId, e) => {
@@ -334,8 +385,18 @@ function EmailList({ accounts }) {
         ) : emails.length === 0 ? (
           <p>No emails found.</p>
         ) : (
-          <ul className="email-list">
-            {emails.map(email => (
+          <>
+            <div className="email-list-toolbar">
+              <button className="btn btn-secondary" onClick={toggleSelectAllOnPage}>
+                {allCurrentPageSelected ? 'Clear page selection' : 'Select all on page'}
+              </button>
+              <span className="email-page-summary">
+                Showing {currentPageStart + 1}-{Math.min(currentPageStart + currentPageEmails.length, emails.length)} of {emails.length}
+              </span>
+            </div>
+
+            <ul className="email-list">
+            {currentPageEmails.map(email => (
               <li
                 key={email.id}
                 className={`email-item ${!email.isRead ? 'unread' : ''} ${email.importance ? email.importance.toLowerCase() : ''}`}
@@ -386,7 +447,18 @@ function EmailList({ accounts }) {
                 </div>
               </li>
             ))}
-          </ul>
+            </ul>
+
+            <div className="pagination-controls">
+              <button className="btn btn-secondary" onClick={goToPreviousPage} disabled={currentPage === 1}>
+                Previous
+              </button>
+              <span className="pagination-status">Page {currentPage} of {totalPages}</span>
+              <button className="btn btn-secondary" onClick={goToNextPage} disabled={currentPage === totalPages}>
+                Next
+              </button>
+            </div>
+          </>
         )}
         </div>
 

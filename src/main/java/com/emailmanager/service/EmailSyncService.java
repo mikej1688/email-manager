@@ -47,7 +47,7 @@ public class EmailSyncService {
     @Scheduled(fixedRate = 300000) // 5 minutes
     @Transactional
     public void syncAllAccounts() {
-        if (shuttingDown.get()) {
+        if (shuttingDown.get() || Thread.currentThread().isInterrupted()) {
             log.info("Skipping scheduled sync — application is shutting down");
             return;
         }
@@ -55,7 +55,7 @@ public class EmailSyncService {
         List<EmailAccount> activeAccounts = emailAccountRepository.findByIsActiveTrue();
 
         for (EmailAccount account : activeAccounts) {
-            if (shuttingDown.get()) {
+            if (shuttingDown.get() || Thread.currentThread().isInterrupted()) {
                 log.info("Aborting sync loop — application is shutting down");
                 break;
             }
@@ -79,6 +79,11 @@ public class EmailSyncService {
      */
     @Transactional
     public void syncAccount(EmailAccount account) {
+        if (shuttingDown.get() || Thread.currentThread().isInterrupted()) {
+            log.info("Skipping account sync for {} during shutdown", account.getEmailAddress());
+            return;
+        }
+
         log.info("Syncing account: {}", account.getEmailAddress());
 
         EmailProviderService providerService = getProviderService(account);
@@ -89,6 +94,10 @@ public class EmailSyncService {
         // Save new emails
         int savedCount = 0;
         for (Email email : newEmails) {
+            if (shuttingDown.get() || Thread.currentThread().isInterrupted()) {
+                log.info("Stopping email save loop for {} during shutdown", account.getEmailAddress());
+                break;
+            }
             // Check if email already exists
             if (emailRepository.findByMessageId(email.getMessageId()).isEmpty()) {
                 // Classify the email

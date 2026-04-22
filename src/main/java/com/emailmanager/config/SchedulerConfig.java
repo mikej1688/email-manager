@@ -9,8 +9,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 /**
  * Configures the scheduler thread pool so that when the application shuts down:
  * - No new scheduled tasks are accepted
- * - Any in-progress sync task is allowed to finish (up to 30 s) before the JVM
- * exits
+ * - In-progress scheduled work is interrupted instead of delaying JVM exit
  */
 @Configuration
 public class SchedulerConfig implements SchedulingConfigurer {
@@ -20,8 +19,9 @@ public class SchedulerConfig implements SchedulingConfigurer {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(5);
         scheduler.setThreadNamePrefix("email-sync-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
-        scheduler.setAwaitTerminationSeconds(30);
+        scheduler.setWaitForTasksToCompleteOnShutdown(false);
+        scheduler.setAcceptTasksAfterContextClose(false);
+        scheduler.setAwaitTerminationSeconds(0);
         scheduler.setErrorHandler(t -> org.slf4j.LoggerFactory.getLogger(SchedulerConfig.class)
                 .error("Unhandled error in scheduled task", t));
         scheduler.initialize();

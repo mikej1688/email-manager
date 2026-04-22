@@ -23,6 +23,8 @@ import java.util.Properties;
 @Slf4j
 public class ImapEmailService implements EmailProviderService {
 
+    private static final String MAIL_TIMEOUT_MS = "5000";
+
     @Override
     public boolean authenticate(EmailAccount account) {
         try {
@@ -44,6 +46,12 @@ public class ImapEmailService implements EmailProviderService {
         Folder inbox = null;
 
         try {
+            if (Thread.currentThread().isInterrupted()) {
+                log.info("Skipping IMAP fetch for {} because the sync thread was interrupted",
+                        account.getEmailAddress());
+                return emails;
+            }
+
             store = openImapStore(account);
 
             inbox = store.getFolder("INBOX");
@@ -54,6 +62,12 @@ public class ImapEmailService implements EmailProviderService {
 
             int count = Math.min(messages.length, limit);
             for (int i = messages.length - count; i < messages.length; i++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    log.info("Stopping IMAP fetch loop for {} because the sync thread was interrupted",
+                            account.getEmailAddress());
+                    break;
+                }
+
                 Message message = messages[i];
                 Email email = convertImapToEmail(message, account);
                 emails.add(email);
@@ -225,6 +239,12 @@ public class ImapEmailService implements EmailProviderService {
         props.put("mail.imap.host", account.getImapServer());
         props.put("mail.imap.port", account.getImapPort());
         props.put("mail.imap.ssl.enable", "true");
+        props.put("mail.imap.connectiontimeout", MAIL_TIMEOUT_MS);
+        props.put("mail.imap.timeout", MAIL_TIMEOUT_MS);
+        props.put("mail.imap.writetimeout", MAIL_TIMEOUT_MS);
+        props.put("mail.imaps.connectiontimeout", MAIL_TIMEOUT_MS);
+        props.put("mail.imaps.timeout", MAIL_TIMEOUT_MS);
+        props.put("mail.imaps.writetimeout", MAIL_TIMEOUT_MS);
 
         Session session = Session.getInstance(props);
         Store store = session.getStore("imaps");
