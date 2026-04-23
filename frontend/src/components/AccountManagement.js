@@ -9,7 +9,7 @@ function AccountManagement({ onAccountsChange }) {
     imapPort: '',
     smtpServer: '',
     smtpPort: '',
-    encryptedPassword: ''
+    appPassword: ''
   };
 
   const yahooDefaults = {
@@ -27,6 +27,22 @@ function AccountManagement({ onAccountsChange }) {
   const [formData, setFormData] = useState(emptyForm);
   const [testingConnection, setTestingConnection] = useState(false);
   const [testConnectionResult, setTestConnectionResult] = useState(null);
+
+  const normalizePort = (value) => {
+    if (value === '' || value === null || value === undefined) {
+      return null;
+    }
+
+    const parsedValue = Number(value);
+    return Number.isFinite(parsedValue) ? parsedValue : null;
+  };
+
+  const buildAccountPayload = (account) => ({
+    ...account,
+    encryptedPassword: account.appPassword || null,
+    imapPort: normalizePort(account.imapPort),
+    smtpPort: normalizePort(account.smtpPort)
+  });
 
   useEffect(() => {
     fetchAccounts();
@@ -90,7 +106,7 @@ function AccountManagement({ onAccountsChange }) {
       await fetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(buildAccountPayload(formData))
       });
       setShowForm(false);
       setFormData(emptyForm);
@@ -110,7 +126,7 @@ function AccountManagement({ onAccountsChange }) {
       ...yahooDefaults,
       emailAddress: prev.provider === 'YAHOO' ? prev.emailAddress : '',
       displayName: prev.provider === 'YAHOO' ? prev.displayName : '',
-      encryptedPassword: prev.provider === 'YAHOO' ? prev.encryptedPassword : ''
+      appPassword: prev.provider === 'YAHOO' ? prev.appPassword : ''
     }));
   };
 
@@ -137,8 +153,8 @@ function AccountManagement({ onAccountsChange }) {
       return;
     }
 
-    if (formData.provider !== 'GMAIL' && !formData.encryptedPassword) {
-      setTestConnectionResult({ success: false, message: 'Enter the account password or app password first.' });
+    if (formData.provider !== 'GMAIL' && !formData.appPassword) {
+      setTestConnectionResult({ success: false, message: 'Enter the app password first.' });
       return;
     }
 
@@ -149,7 +165,7 @@ function AccountManagement({ onAccountsChange }) {
       const response = await fetch('/api/accounts/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(buildAccountPayload(formData))
       });
 
       if (!response.ok) {
@@ -362,14 +378,15 @@ function AccountManagement({ onAccountsChange }) {
                 </div>
 
                 <div className="form-group">
-                  <label>Password</label>
+                  <label>App Password</label>
                   <input 
                     type="password"
-                    value={formData.encryptedPassword}
+                    value={formData.appPassword}
                     onChange={(e) => {
                       setTestConnectionResult(null);
-                      setFormData({...formData, encryptedPassword: e.target.value});
+                      setFormData({...formData, appPassword: e.target.value});
                     }}
+                    placeholder="Yahoo app password"
                   />
                 </div>
               </>

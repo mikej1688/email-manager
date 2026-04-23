@@ -1,7 +1,7 @@
 package com.emailmanager.controller;
 
 import com.emailmanager.entity.EmailAccount;
-import com.emailmanager.repository.EmailAccountRepository;
+import com.emailmanager.service.EmailAccountService;
 import com.emailmanager.service.EmailSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -21,12 +21,7 @@ import java.util.Map;
 @CrossOrigin(origins = "*")
 public class EmailAccountController {
 
-    private static final String YAHOO_IMAP_SERVER = "imap.mail.yahoo.com";
-    private static final int YAHOO_IMAP_PORT = 993;
-    private static final String YAHOO_SMTP_SERVER = "smtp.mail.yahoo.com";
-    private static final int YAHOO_SMTP_PORT = 587;
-
-    private final EmailAccountRepository emailAccountRepository;
+    private final EmailAccountService emailAccountService;
     private final EmailSyncService emailSyncService;
 
     /**
@@ -34,7 +29,7 @@ public class EmailAccountController {
      */
     @GetMapping
     public ResponseEntity<List<EmailAccount>> getAllAccounts() {
-        List<EmailAccount> accounts = emailAccountRepository.findAll();
+        List<EmailAccount> accounts = emailAccountService.getAllAccounts();
         return ResponseEntity.ok(accounts);
     }
 
@@ -43,7 +38,7 @@ public class EmailAccountController {
      */
     @GetMapping("/active")
     public ResponseEntity<List<EmailAccount>> getActiveAccounts() {
-        List<EmailAccount> accounts = emailAccountRepository.findByIsActiveTrue();
+        List<EmailAccount> accounts = emailAccountService.getActiveAccounts();
         return ResponseEntity.ok(accounts);
     }
 
@@ -52,7 +47,7 @@ public class EmailAccountController {
      */
     @GetMapping("/{id}")
     public ResponseEntity<EmailAccount> getAccountById(@PathVariable Long id) {
-        return emailAccountRepository.findById(id)
+        return emailAccountService.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -62,8 +57,7 @@ public class EmailAccountController {
      */
     @PostMapping
     public ResponseEntity<EmailAccount> addAccount(@RequestBody EmailAccount account) {
-        applyProviderDefaults(account);
-        EmailAccount savedAccount = emailAccountRepository.save(account);
+        EmailAccount savedAccount = emailAccountService.createAccount(account);
         return ResponseEntity.status(HttpStatus.CREATED).body(savedAccount);
     }
 
@@ -75,13 +69,8 @@ public class EmailAccountController {
             @PathVariable Long id,
             @RequestBody EmailAccount account) {
 
-        return emailAccountRepository.findById(id)
-                .map(existingAccount -> {
-                    account.setId(id);
-                    applyProviderDefaults(account);
-                    EmailAccount updated = emailAccountRepository.save(account);
-                    return ResponseEntity.ok(updated);
-                })
+        return emailAccountService.updateAccount(id, account)
+                .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
@@ -90,12 +79,10 @@ public class EmailAccountController {
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteAccount(@PathVariable Long id) {
-        return emailAccountRepository.findById(id)
-                .map(account -> {
-                    emailAccountRepository.delete(account);
-                    return ResponseEntity.ok().<Void>build();
-                })
-                .orElse(ResponseEntity.notFound().build());
+        if (emailAccountService.deleteAccount(id)) {
+            return ResponseEntity.ok().build();
+        }
+        return ResponseEntity.notFound().build();
     }
 
     /**
@@ -103,13 +90,14 @@ public class EmailAccountController {
      */
     @PostMapping("/test-connection")
     public ResponseEntity<Map<String, Object>> testConnectionForDraft(@RequestBody EmailAccount account) {
-        applyProviderDefaults(account);
-        boolean connected = emailSyncService.testConnection(account);
+        EmailAccount hydratedAccount = emailAccountService.createAccountPreview(account);
+        boolean connected = emailSyncService.testConnection(hydratedAccount);
         Map<String, Object> result = new HashMap<>();
         result.put("success", connected);
         if (connected) {
             result.put("message", "Connection successful.");
-        } else if (account.getProvider() == EmailAccount.EmailProvider.YAHOO) {
+            updateAccount(hydratedAccount.getId(), hydratedAccount);
+        } else if (hydratedAccount.getProvider() == EmailAccount.EmailProvider.YAHOO) {
             result.put("message",
                     "Yahoo rejected the login. Use a Yahoo app password instead of your regular sign-in password, then try again.");
         } else {
@@ -123,7 +111,7 @@ public class EmailAccountController {
      */
     @PostMapping("/{id}/test-connection")
     public ResponseEntity<Boolean> testConnection(@PathVariable Long id) {
-        return emailAccountRepository.findById(id)
+        return emailAccountService.findById(id)
                 .map(account -> {
                     boolean connected = emailSyncService.testConnection(account);
                     return ResponseEntity.ok(connected);
@@ -136,7 +124,7 @@ public class EmailAccountController {
      */
     @PostMapping("/{id}/sync")
     public ResponseEntity<String> syncAccount(@PathVariable Long id) {
-        return emailAccountRepository.findById(id)
+        return emailAccountService.findById(id)
                 .map(account -> {
                     emailSyncService.syncAccount(account);
                     return ResponseEntity.ok("Sync completed successfully");
@@ -151,24 +139,5 @@ public class EmailAccountController {
     public ResponseEntity<String> syncAllAccounts() {
         emailSyncService.syncAllAccounts();
         return ResponseEntity.ok("Sync initiated for all accounts");
-    }
-
-    private void applyProviderDefaults(EmailAccount account) {
-        if (account.getProvider() != EmailAccount.EmailProvider.YAHOO) {
-            return;
-        }
-
-        if (account.getImapServer() == null || account.getImapServer().isBlank()) {
-            account.setImapServer(YAHOO_IMAP_SERVER);
-        }
-        if (account.getImapPort() == null || account.getImapPort() <= 0) {
-            account.setImapPort(YAHOO_IMAP_PORT);
-        }
-        if (account.getSmtpServer() == null || account.getSmtpServer().isBlank()) {
-            account.setSmtpServer(YAHOO_SMTP_SERVER);
-        }
-        if (account.getSmtpPort() == null || account.getSmtpPort() <= 0) {
-            account.setSmtpPort(YAHOO_SMTP_PORT);
-        }
     }
 }

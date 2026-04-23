@@ -1,9 +1,12 @@
 package com.emailmanager.entity;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
 import java.time.LocalDateTime;
 
 /**
@@ -39,7 +42,10 @@ public class EmailAccount {
 
     private LocalDateTime tokenExpiryDate;
 
-    // IMAP/SMTP credentials for non-OAuth providers
+    // IMAP/SMTP credential storage. The API can populate this directly or via
+    // appPassword.
+    @JsonAlias("appPassword")
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Column(length = 500)
     private String encryptedPassword;
 
@@ -65,6 +71,19 @@ public class EmailAccount {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    @Transient
+    @JsonProperty(value = "appPassword", access = JsonProperty.Access.WRITE_ONLY)
+    public String getAppPassword() {
+        return encryptedPassword;
+    }
+
+    @JsonProperty("appPassword")
+    public void setAppPassword(String appPassword) {
+        if (appPassword != null && !appPassword.isBlank()) {
+            this.encryptedPassword = appPassword;
+        }
     }
 
     public enum EmailProvider {

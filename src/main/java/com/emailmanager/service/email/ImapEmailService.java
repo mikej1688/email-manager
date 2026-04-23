@@ -23,6 +23,7 @@ import java.util.Properties;
 @Slf4j
 public class ImapEmailService implements EmailProviderService {
 
+    private static final int DEFAULT_IMAPS_PORT = 993;
     private static final String MAIL_TIMEOUT_MS = "5000";
 
     @Override
@@ -208,8 +209,7 @@ public class ImapEmailService implements EmailProviderService {
                 protected PasswordAuthentication getPasswordAuthentication() {
                     return new PasswordAuthentication(
                             account.getEmailAddress(),
-                            account.getEncryptedPassword() // Should be decrypted in production
-                    );
+                            account.getAppPassword());
                 }
             });
 
@@ -234,11 +234,13 @@ public class ImapEmailService implements EmailProviderService {
     }
 
     private Store openImapStore(EmailAccount account) throws MessagingException {
+        int imapPort = resolveImapPort(account);
+
         Properties props = new Properties();
         props.put("mail.store.protocol", "imaps");
-        props.put("mail.imap.host", account.getImapServer());
-        props.put("mail.imap.port", account.getImapPort());
-        props.put("mail.imap.ssl.enable", "true");
+        props.put("mail.imaps.host", account.getImapServer());
+        props.put("mail.imaps.port", String.valueOf(imapPort));
+        props.put("mail.imaps.ssl.enable", "true");
         props.put("mail.imap.connectiontimeout", MAIL_TIMEOUT_MS);
         props.put("mail.imap.timeout", MAIL_TIMEOUT_MS);
         props.put("mail.imap.writetimeout", MAIL_TIMEOUT_MS);
@@ -250,11 +252,24 @@ public class ImapEmailService implements EmailProviderService {
         Store store = session.getStore("imaps");
         store.connect(
                 account.getImapServer(),
+                imapPort,
                 account.getEmailAddress(),
-                account.getEncryptedPassword() // Should be decrypted in production
-        );
+                account.getEncryptedPassword());
 
         return store;
+    }
+
+    private int resolveImapPort(EmailAccount account) {
+        if (account.getImapPort() != null && account.getImapPort() > 0) {
+            return account.getImapPort();
+        }
+
+        if (account.getProvider() == EmailAccount.EmailProvider.YAHOO) {
+            log.warn("IMAP port missing for Yahoo account {}. Falling back to {}.",
+                    account.getEmailAddress(), DEFAULT_IMAPS_PORT);
+        }
+
+        return DEFAULT_IMAPS_PORT;
     }
 
     private Email convertImapToEmail(Message message, EmailAccount account) throws MessagingException {
