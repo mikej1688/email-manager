@@ -11,7 +11,7 @@ function EmailList({ accounts }) {
   const [loading, setLoading] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailLoading, setEmailLoading] = useState(false);
-  const [composeMode, setComposeMode] = useState(null); // null | 'compose' | 'reply' | 'replyAll' | 'forward'
+  const [composeMode, setComposeMode] = useState(null); // null | 'compose' | 'reply' | 'replyAll' | 'forward' | 'draft'
   const [selectedEmails, setSelectedEmails] = useState(new Set());
   const [actionFeedback, setActionFeedback] = useState('');
   const [newEmailCount, setNewEmailCount] = useState(0);
@@ -73,6 +73,7 @@ function EmailList({ accounts }) {
         else if (currentFilter === 'urgent') url += '/importance/URGENT';
         else if (currentFilter === 'high') url += '/importance/HIGH';
         else if (currentFilter === 'sent') url += '/category/SENT';
+        else if (currentFilter === 'draft') url += '/category/DRAFT';
 
         const response = await fetch(url);
         if (!response.ok) return;
@@ -108,6 +109,7 @@ function EmailList({ accounts }) {
       else if (currentFilter === 'urgent') url += '/importance/URGENT';
       else if (currentFilter === 'high') url += '/importance/HIGH';
       else if (currentFilter === 'sent') url += '/category/SENT';
+      else if (currentFilter === 'draft') url += '/category/DRAFT';
 
       const response = await fetch(url);
       const data = await response.json();
@@ -257,6 +259,27 @@ function EmailList({ accounts }) {
     setSelectedEmails(new Set());
   };
 
+  const discardDraft = async (draftId) => {
+    try {
+      const response = await fetch(`/api/emails/drafts/${draftId}`, { method: 'DELETE' });
+      if (response.ok) {
+        setEmails(prev => prev.filter(e => e.id !== draftId));
+        setSelectedEmails(prev => {
+          const next = new Set(prev);
+          next.delete(draftId);
+          return next;
+        });
+        if (selectedEmail && selectedEmail.id === draftId) {
+          setSelectedEmail(null);
+        }
+        setActionFeedback('Draft discarded');
+      }
+    } catch (error) {
+      console.error('Error discarding draft:', error);
+      setActionFeedback('Failed to discard draft');
+    }
+  };
+
   const toggleSelectAllOnPage = () => {
     setSelectedEmails(prev => {
       const next = new Set(prev);
@@ -299,6 +322,11 @@ function EmailList({ accounts }) {
     setComposeMode('forward');
   };
 
+  const openDraft = () => {
+    if (!selectedEmail) return;
+    setComposeMode('draft');
+  };
+
   const getImportanceBadge = (importance) => {
     if (!importance) return null;
     const classes = {
@@ -309,6 +337,8 @@ function EmailList({ accounts }) {
     };
     return <span className={classes[importance] || 'importance-badge'}>{importance}</span>;
   };
+
+  const isOutgoingFilter = filter === 'sent' || filter === 'draft';
 
   return (
     <div>
@@ -364,6 +394,7 @@ function EmailList({ accounts }) {
               <option value="urgent">Urgent</option>
               <option value="high">High Priority</option>
               <option value="sent">Sent</option>
+              <option value="draft">Drafts</option>
             </select>
           </div>
 
@@ -421,11 +452,12 @@ function EmailList({ accounts }) {
                   <div style={{flex: 1, minWidth: 0}}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                       <div>
-                        <strong>{filter === 'sent' ? (email.toAddresses || email.fromAddress) : email.fromAddress}</strong>
-                        {filter === 'sent' && <span style={{marginLeft: '6px', fontSize: '0.8rem', color: '#5f6368'}}>To</span>}
+                        <strong>{isOutgoingFilter ? (email.toAddresses || '(No recipient)') : email.fromAddress}</strong>
+                        {isOutgoingFilter && <span style={{marginLeft: '6px', fontSize: '0.8rem', color: '#5f6368'}}>To</span>}
                         {getImportanceBadge(email.importance)}
                         {email.isPhishing && <span style={{color: 'red', marginLeft: '0.5rem'}}>⚠️ PHISHING</span>}
                         {email.isSpam && <span style={{color: 'orange', marginLeft: '0.5rem'}}>🗑️ SPAM</span>}
+                        {email.category === 'DRAFT' && <span style={{marginLeft: '8px', fontSize: '0.8rem', color: '#f29900'}}>Draft</span>}
                       </div>
                       <div style={{fontSize: '0.9rem', color: '#7f8c8d', display: 'flex', alignItems: 'center', gap: '8px'}}>
                         {new Date(email.receivedDate).toLocaleString()}
@@ -484,7 +516,7 @@ function EmailList({ accounts }) {
                 <div className="move-dropdown">
                   <button className="btn-icon" title="Move to...">📁</button>
                   <div className="move-dropdown-content">
-                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED', 'SENT'].map(cat => (
+                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED', 'SENT', 'DRAFT'].map(cat => (
                       <button key={cat} onClick={() => moveEmail(selectedEmail.id, cat)}>{cat}</button>
                     ))}
                   </div>
@@ -612,17 +644,28 @@ function EmailList({ accounts }) {
 
             {/* Reply / Forward / Open action bar */}
             <div className="email-action-bar">
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn-action" onClick={() => openReply(false)}>
-                  ↩️ Reply
-                </button>
-                <button className="btn-action" onClick={() => openReply(true)}>
-                  ↩️↩️ Reply All
-                </button>
-                <button className="btn-action" onClick={openForward}>
-                  ↪️ Forward
-                </button>
-              </div>
+              {selectedEmail.category === 'DRAFT' ? (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn-action" onClick={openDraft}>
+                    ✏️ Resume Draft
+                  </button>
+                  <button className="btn-action-secondary" onClick={() => discardDraft(selectedEmail.id)}>
+                    🗑️ Discard Draft
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn-action" onClick={() => openReply(false)}>
+                    ↩️ Reply
+                  </button>
+                  <button className="btn-action" onClick={() => openReply(true)}>
+                    ↩️↩️ Reply All
+                  </button>
+                  <button className="btn-action" onClick={openForward}>
+                    ↪️ Forward
+                  </button>
+                </div>
+              )}
               <button
                 onClick={() => {
                   const html = selectedEmail.bodyHtml || selectedEmail.bodyPlainText || '(No content)';
@@ -646,7 +689,23 @@ function EmailList({ accounts }) {
         <ComposeEmail
           accounts={accounts}
           onClose={() => setComposeMode(null)}
-          onSent={() => { setActionFeedback('Message sent!'); fetchEmails(); }}
+          onSent={() => {
+            setActionFeedback('Message sent!');
+            if (composeMode === 'draft') {
+              setSelectedEmail(null);
+            }
+            fetchEmails();
+          }}
+          onDraftSaved={() => {
+            setActionFeedback('Draft saved');
+            setSelectedEmail(null);
+            fetchEmails();
+          }}
+          onDraftDiscarded={() => {
+            setActionFeedback('Draft discarded');
+            setSelectedEmail(null);
+            fetchEmails();
+          }}
           replyTo={composeMode === 'reply' || composeMode === 'replyAll' ? {
             emailId: selectedEmail.id,
             accountId: selectedAccount,
@@ -669,6 +728,14 @@ function EmailList({ accounts }) {
             receivedDate: selectedEmail.receivedDate,
             bodyPlainText: selectedEmail.bodyPlainText || '',
             bodyHtml: selectedEmail.bodyHtml || ''
+          } : null}
+          draftEmail={composeMode === 'draft' ? {
+            id: selectedEmail.id,
+            accountId: selectedAccount,
+            toAddresses: selectedEmail.toAddresses || '',
+            ccAddresses: selectedEmail.ccAddresses || '',
+            subject: selectedEmail.subject || '',
+            bodyPlainText: selectedEmail.bodyPlainText || ''
           } : null}
         />
       )}

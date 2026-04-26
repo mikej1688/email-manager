@@ -54,33 +54,42 @@ const buildReplyAllCc = (editedTo, originalTo, originalCc, accountEmailAddress) 
   return Array.from(deduped.values()).join(', ');
 };
 
-function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
-  const currentAccount = accounts.find((account) => account.id === replyTo?.accountId);
+function ComposeEmail({ accounts, onClose, onSent, onDraftSaved, onDraftDiscarded, replyTo, forwardEmail, draftEmail }) {
+  const activeAccountId = draftEmail?.accountId ?? replyTo?.accountId;
+  const currentAccount = accounts.find((account) => account.id === activeAccountId);
   const initialReplyAllCc = replyTo?.replyAll
     ? buildReplyAllCc(replyTo.to, replyTo.originalToAddresses, replyTo.originalCcAddresses, currentAccount?.emailAddress)
     : (replyTo?.cc || '');
 
-  const [to, setTo] = useState(replyTo ? replyTo.to : (forwardEmail ? '' : ''));
-  const [cc, setCc] = useState(replyTo ? initialReplyAllCc : '');
-  const [subject, setSubject] = useState(
+  const initialTo = draftEmail?.toAddresses ?? (replyTo ? replyTo.to : '');
+  const initialCc = draftEmail?.ccAddresses ?? (replyTo ? initialReplyAllCc : '');
+  const initialSubject = draftEmail?.subject ?? (
     replyTo ? replyTo.subject :
     forwardEmail ? `Fwd: ${forwardEmail.subject || ''}` : ''
   );
-  const [body, setBody] = useState(
+  const initialBody = draftEmail?.bodyPlainText ?? (
     forwardEmail
       ? `\n\n---------- Forwarded message ----------\nFrom: ${forwardEmail.fromAddress || ''}\nDate: ${forwardEmail.receivedDate ? new Date(forwardEmail.receivedDate).toLocaleString() : ''}\nSubject: ${forwardEmail.subject || ''}\nTo: ${forwardEmail.toAddresses || ''}\n\n${forwardEmail.bodyPlainText || ''}`
       : replyTo
         ? `\n\nOn ${replyTo.date}, ${replyTo.fromName || replyTo.to} wrote:\n> ${(replyTo.originalText || '').split('\n').join('\n> ')}`
         : ''
   );
-  const [accountId, setAccountId] = useState(
+  const initialAccountId = draftEmail?.accountId ?? (
     replyTo ? replyTo.accountId :
     forwardEmail ? forwardEmail.accountId :
     (accounts.length > 0 ? accounts[0].id : '')
   );
+
+  const [draftId, setDraftId] = useState(draftEmail?.id || '');
+  const [to, setTo] = useState(initialTo);
+  const [cc, setCc] = useState(initialCc);
+  const [subject, setSubject] = useState(initialSubject);
+  const [body, setBody] = useState(initialBody);
+  const [accountId, setAccountId] = useState(initialAccountId);
   const [sending, setSending] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [error, setError] = useState('');
-  const [showCc, setShowCc] = useState(!!initialReplyAllCc || !!replyTo?.replyAll);
+  const [showCc, setShowCc] = useState(!!initialCc || !!replyTo?.replyAll);
   const [ccEdited, setCcEdited] = useState(false);
   const [activeRecipientField, setActiveRecipientField] = useState('');
   const [recipientSuggestions, setRecipientSuggestions] = useState([]);
@@ -89,6 +98,7 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
 
   const activeRecipientValue = activeRecipientField === 'cc' ? cc : to;
   const activeRecipientToken = getActiveRecipientToken(activeRecipientValue);
+  const hasDraftContent = [to, cc, subject, body].some((value) => (value || '').trim());
 
   useEffect(() => {
     if (!replyTo?.replyAll || ccEdited) {
@@ -227,6 +237,55 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
     }
   };
 
+  const saveDraft = async () => {
+    if (!hasDraftContent || !accountId) {
+      return true;
+    }
+
+    setSavingDraft(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/emails/drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draftId: draftId ? String(draftId) : '',
+          accountId: String(accountId),
+          to,
+          cc,
+          subject,
+          body
+        })
+      });
+
+      if (!response.ok) {
+        let msg = 'Failed to save draft';
+        try {
+          const data = await response.json();
+          msg = data.message || msg;
+        } catch (_) {}
+        setError(msg);
+        return false;
+      }
+
+      const data = await response.json();
+      const nextDraftId = data.draftId ? Number(data.draftId) : draftId || null;
+      if (nextDraftId) {
+        setDraftId(nextDraftId);
+      }
+      if (onDraftSaved) {
+        onDraftSaved(nextDraftId);
+      }
+      return true;
+    } catch (_) {
+      setError('Network error: could not save draft');
+      return false;
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!to.trim()) { setError('Please enter a recipient'); return; }
     if (!subject.trim()) { setError('Please enter a subject'); return; }
@@ -236,32 +295,36 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
     setError('');
 
     try {
-      let url, payload;
+      let url;
+      let payload;
 
       if (replyTo && replyTo.emailId) {
         url = `/api/emails/${replyTo.emailId}/reply`;
         payload = {
-          to: to,
-          body: body,
-          cc: cc,
+          to,
+          body,
+          cc,
+          draftId: draftId ? String(draftId) : '',
           replyAll: String(replyTo.replyAll || false),
           isHtml: 'false'
         };
       } else if (forwardEmail && forwardEmail.emailId) {
         url = `/api/emails/${forwardEmail.emailId}/forward`;
         payload = {
-          to: to,
-          body: body,
+          to,
+          body,
+          draftId: draftId ? String(draftId) : '',
           isHtml: 'false'
         };
       } else {
         url = '/api/emails/send';
         payload = {
           accountId: String(accountId),
-          to: to,
-          cc: cc,
-          subject: subject,
-          body: body,
+          to,
+          cc,
+          subject,
+          body,
+          draftId: draftId ? String(draftId) : '',
           isHtml: 'false'
         };
       }
@@ -283,22 +346,70 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
         } catch (_) {}
         setError(msg);
       }
-    } catch (err) {
+    } catch (_) {
       setError('Network error: could not send email');
     } finally {
       setSending(false);
     }
   };
 
+  const handleClose = async () => {
+    if (sending || savingDraft) {
+      return;
+    }
+
+    const saved = await saveDraft();
+    if (saved) {
+      onClose();
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (sending || savingDraft) {
+      return;
+    }
+
+    if (!draftId) {
+      onClose();
+      return;
+    }
+
+    setSavingDraft(true);
+    setError('');
+
+    try {
+      const response = await fetch(`/api/emails/drafts/${draftId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        let msg = 'Failed to discard draft';
+        try {
+          const data = await response.json();
+          msg = data.message || msg;
+        } catch (_) {}
+        setError(msg);
+        return;
+      }
+
+      if (onDraftDiscarded) {
+        onDraftDiscarded(draftId);
+      }
+      onClose();
+    } catch (_) {
+      setError('Network error: could not discard draft');
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
   return (
-    <div className="compose-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="compose-overlay" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
       <div className="compose-modal">
         <div className="compose-header">
           <span className="compose-title">
-            {replyTo ? (replyTo.replyAll ? 'Reply All' : 'Reply') :
+            {draftEmail ? 'Edit Draft' :
+             replyTo ? (replyTo.replyAll ? 'Reply All' : 'Reply') :
              forwardEmail ? 'Forward' : 'New Message'}
           </span>
-          <button className="compose-close" onClick={onClose}>✕</button>
+          <button className="compose-close" onClick={handleClose}>✕</button>
         </div>
 
         <div className="compose-body">
@@ -394,7 +505,6 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
               value={subject}
               onChange={e => setSubject(e.target.value)}
               placeholder="Subject"
-              disabled={!!replyTo}
             />
           </div>
 
@@ -411,10 +521,13 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
         </div>
 
         <div className="compose-footer">
-          <button className="btn btn-primary compose-send-btn" onClick={handleSend} disabled={sending}>
+          <button className="btn btn-primary compose-send-btn" onClick={handleSend} disabled={sending || savingDraft}>
             {sending ? 'Sending...' : 'Send'}
           </button>
-          <button className="btn compose-discard-btn" onClick={onClose}>Discard</button>
+          <button className="btn btn-secondary" onClick={handleClose} disabled={sending || savingDraft}>
+            {savingDraft ? 'Saving...' : 'Save Draft'}
+          </button>
+          <button className="btn compose-discard-btn" onClick={handleDiscard} disabled={sending || savingDraft}>Discard</button>
         </div>
       </div>
     </div>

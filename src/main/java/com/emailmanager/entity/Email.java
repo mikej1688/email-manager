@@ -130,6 +130,7 @@ public class Email {
         SPAM,
         TRASH,
         ARCHIVED,
-        SENT
+        SENT,
+        DRAFT
     }
 }

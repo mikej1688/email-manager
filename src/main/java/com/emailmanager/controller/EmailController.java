@@ -72,7 +72,7 @@ public class EmailController {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
                     Page<Email> emails = emailRepository.findByAccountAndCategoryNotIn(
                             account,
-                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT),
+                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT, Email.EmailCategory.DRAFT),
                             pageable);
                     return ResponseEntity.ok(emails);
                 })
@@ -93,7 +93,7 @@ public class EmailController {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
                     Page<Email> emails = emailRepository.findByAccountAndIsReadAndCategoryNotIn(
                             account, false,
-                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT),
+                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT, Email.EmailCategory.DRAFT),
                             pageable);
                     return ResponseEntity.ok(emails);
                 })
@@ -352,6 +352,79 @@ public class EmailController {
     }
 
     /**
+     * Save or update an unfinished draft email locally.
+     */
+    @PostMapping("/drafts")
+    @Transactional
+    public ResponseEntity<Map<String, String>> saveDraft(@RequestBody Map<String, String> request) {
+        String accountIdValue = request.get("accountId");
+        if (accountIdValue == null || accountIdValue.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Account is required"));
+        }
+
+        Long accountId = Long.parseLong(accountIdValue);
+        return emailAccountRepository.findById(accountId)
+                .map(account -> {
+                    Email draft = null;
+                    String draftIdValue = request.get("draftId");
+                    if (draftIdValue != null && !draftIdValue.isBlank()) {
+                        draft = emailRepository.findById(Long.parseLong(draftIdValue)).orElse(null);
+                    }
+
+                    if (draft == null) {
+                        draft = new Email();
+                        draft.setMessageId("draft-" + UUID.randomUUID());
+                        draft.setAccount(emailAccountRepository.getReferenceById(account.getId()));
+                        draft.setCategory(Email.EmailCategory.DRAFT);
+                        draft.setIsRead(true);
+                    }
+
+                    draft.setFromAddress(account.getEmailAddress());
+                    draft.setFromName(account.getDisplayName());
+                    draft.setToAddresses(request.getOrDefault("to", ""));
+                    draft.setCcAddresses(request.getOrDefault("cc", ""));
+                    draft.setSubject(request.getOrDefault("subject", ""));
+                    draft.setBodyPlainText(request.getOrDefault("body", ""));
+                    draft.setReceivedDate(LocalDateTime.now());
+                    draft.setIsStarred(false);
+                    draft.setImportance(Email.ImportanceLevel.NORMAL);
+                    draft.setIsSpam(false);
+                    draft.setIsPhishing(false);
+
+                    Email savedDraft = emailRepository.save(draft);
+                    return ResponseEntity.ok(Map.of(
+                            "status", "saved",
+                            "message", "Draft saved",
+                            "draftId", String.valueOf(savedDraft.getId())));
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Discard a saved draft.
+     */
+    @DeleteMapping("/drafts/{id}")
+    @Transactional
+    public ResponseEntity<Map<String, String>> discardDraft(@PathVariable Long id) {
+        return emailRepository.findById(id)
+                .map(draft -> {
+                    if (draft.getCategory() != Email.EmailCategory.DRAFT) {
+                        return ResponseEntity.badRequest().body(Map.of(
+                                "status", "error",
+                                "message", "Email is not a draft"));
+                    }
+
+                    emailRepository.delete(draft);
+                    return ResponseEntity.ok(Map.of(
+                            "status", "deleted",
+                            "message", "Draft discarded"));
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
      * Send a new email (compose)
      */
     @PostMapping("/send")
@@ -361,6 +434,7 @@ public class EmailController {
         String cc = request.getOrDefault("cc", "");
         String subject = request.get("subject");
         String body = request.get("body");
+        String draftIdValue = request.getOrDefault("draftId", "");
         boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
 
         return emailAccountRepository.findById(accountId)
@@ -392,6 +466,7 @@ public class EmailController {
                         }
 
                         recipientAddressService.recordRecipients(to, cc);
+                        deleteDraftIfPresent(draftIdValue);
 
                         result.put("status", "sent");
                         result.put("message", "Email sent successfully");
@@ -416,6 +491,7 @@ public class EmailController {
                     String to = request.getOrDefault("to", email.getFromAddress());
                     String body = request.get("body");
                     String cc = request.getOrDefault("cc", "");
+                    String draftIdValue = request.getOrDefault("draftId", "");
                     boolean replyAll = Boolean.parseBoolean(request.getOrDefault("replyAll", "false"));
                     boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
 
@@ -466,6 +542,7 @@ public class EmailController {
                         }
 
                         recipientAddressService.recordRecipients(replyTo, cc);
+                        deleteDraftIfPresent(draftIdValue);
 
                         result.put("status", "sent");
                         result.put("message", "Reply sent successfully");
@@ -489,6 +566,7 @@ public class EmailController {
                 .<ResponseEntity<Map<String, String>>>map(email -> {
                     String to = request.get("to");
                     String body = request.getOrDefault("body", "");
+                    String draftIdValue = request.getOrDefault("draftId", "");
                     boolean isHtml = Boolean.parseBoolean(request.getOrDefault("isHtml", "false"));
 
                     EmailAccount account = emailAccountRepository
@@ -535,6 +613,7 @@ public class EmailController {
                         }
 
                         recipientAddressService.recordRecipients(to);
+                        deleteDraftIfPresent(draftIdValue);
 
                         result.put("status", "sent");
                         result.put("message", "Email forwarded successfully");
@@ -580,6 +659,21 @@ public class EmailController {
         return RecipientListUtils.normalizeRecipient(recipient);
     }
 
+    private void deleteDraftIfPresent(String draftIdValue) {
+        if (draftIdValue == null || draftIdValue.isBlank()) {
+            return;
+        }
+
+        try {
+            Long draftId = Long.parseLong(draftIdValue);
+            emailRepository.findById(draftId)
+                    .filter(email -> email.getCategory() == Email.EmailCategory.DRAFT)
+                    .ifPresent(emailRepository::delete);
+        } catch (NumberFormatException ignored) {
+            // Ignore malformed client values rather than failing a successful send.
+        }
+    }
+
     private String mapCategoryToGmailLabel(Email.EmailCategory category) {
         switch (category) {
             case INBOX:
@@ -592,6 +686,8 @@ public class EmailController {
                 return "TRASH";
             case SENT:
                 return "SENT";
+            case DRAFT:
+                return "DRAFT";
             case SOCIAL:
                 return "CATEGORY_SOCIAL";
             case PROMOTIONS:
