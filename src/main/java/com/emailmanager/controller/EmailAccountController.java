@@ -96,7 +96,6 @@ public class EmailAccountController {
         result.put("success", connected);
         if (connected) {
             result.put("message", "Connection successful.");
-            updateAccount(hydratedAccount.getId(), hydratedAccount);
         } else if (hydratedAccount.getProvider() == EmailAccount.EmailProvider.YAHOO) {
             result.put("message",
                     "Yahoo rejected the login. Use a Yahoo app password instead of your regular sign-in password, then try again.");

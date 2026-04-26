@@ -1,44 +1,60 @@
 import React, { useEffect, useState } from 'react';
 
-function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
-  const getNormalizedRecipient = (recipient) => {
-    if (!recipient) return '';
-    const trimmed = recipient.trim();
-    const start = trimmed.indexOf('<');
-    const end = trimmed.indexOf('>');
-    if (start >= 0 && end > start) {
-      return trimmed.slice(start + 1, end).trim().toLowerCase();
-    }
-    return trimmed.toLowerCase();
-  };
+const RECIPIENT_SUGGESTION_LIMIT = 8;
 
-  const buildReplyAllCc = (editedTo, originalTo, originalCc, accountEmailAddress) => {
-    const toRecipients = new Set();
-    (editedTo || '').split(',').forEach((part) => {
-      const normalized = getNormalizedRecipient(part);
-      if (normalized) {
-        toRecipients.add(normalized);
+const getNormalizedRecipient = (recipient) => {
+  if (!recipient) return '';
+  const trimmed = recipient.trim();
+  const start = trimmed.indexOf('<');
+  const end = trimmed.indexOf('>');
+  if (start >= 0 && end > start) {
+    return trimmed.slice(start + 1, end).trim().toLowerCase();
+  }
+  return trimmed.toLowerCase();
+};
+
+const getActiveRecipientToken = (recipientValue) => {
+  if (!recipientValue) return '';
+  const separatorIndex = Math.max(recipientValue.lastIndexOf(','), recipientValue.lastIndexOf(';'));
+  return recipientValue.slice(separatorIndex + 1).trim();
+};
+
+const replaceRecipientToken = (recipientValue, suggestion) => {
+  const separatorIndex = Math.max(recipientValue.lastIndexOf(','), recipientValue.lastIndexOf(';'));
+  const prefix = separatorIndex >= 0
+    ? recipientValue.slice(0, separatorIndex + 1).trimEnd()
+    : '';
+  return prefix ? `${prefix} ${suggestion}, ` : `${suggestion}, `;
+};
+
+const buildReplyAllCc = (editedTo, originalTo, originalCc, accountEmailAddress) => {
+  const toRecipients = new Set();
+  (editedTo || '').split(/[;,]/).forEach((part) => {
+    const normalized = getNormalizedRecipient(part);
+    if (normalized) {
+      toRecipients.add(normalized);
+    }
+  });
+
+  const ownAddress = getNormalizedRecipient(accountEmailAddress);
+  const deduped = new Map();
+  [originalTo, originalCc].forEach((recipientList) => {
+    (recipientList || '').split(/[;,]/).forEach((part) => {
+      const trimmed = part.trim();
+      const normalized = getNormalizedRecipient(trimmed);
+      if (!normalized || normalized === ownAddress || toRecipients.has(normalized)) {
+        return;
+      }
+      if (!deduped.has(normalized)) {
+        deduped.set(normalized, trimmed);
       }
     });
+  });
 
-    const ownAddress = getNormalizedRecipient(accountEmailAddress);
-    const deduped = new Map();
-    [originalTo, originalCc].forEach((recipientList) => {
-      (recipientList || '').split(',').forEach((part) => {
-        const trimmed = part.trim();
-        const normalized = getNormalizedRecipient(trimmed);
-        if (!normalized || normalized === ownAddress || toRecipients.has(normalized)) {
-          return;
-        }
-        if (!deduped.has(normalized)) {
-          deduped.set(normalized, trimmed);
-        }
-      });
-    });
+  return Array.from(deduped.values()).join(', ');
+};
 
-    return Array.from(deduped.values()).join(', ');
-  };
-
+function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
   const currentAccount = accounts.find((account) => account.id === replyTo?.accountId);
   const initialReplyAllCc = replyTo?.replyAll
     ? buildReplyAllCc(replyTo.to, replyTo.originalToAddresses, replyTo.originalCcAddresses, currentAccount?.emailAddress)
@@ -66,6 +82,13 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
   const [error, setError] = useState('');
   const [showCc, setShowCc] = useState(!!initialReplyAllCc || !!replyTo?.replyAll);
   const [ccEdited, setCcEdited] = useState(false);
+  const [activeRecipientField, setActiveRecipientField] = useState('');
+  const [recipientSuggestions, setRecipientSuggestions] = useState([]);
+  const [showRecipientSuggestions, setShowRecipientSuggestions] = useState(false);
+  const [highlightedRecipientIndex, setHighlightedRecipientIndex] = useState(-1);
+
+  const activeRecipientValue = activeRecipientField === 'cc' ? cc : to;
+  const activeRecipientToken = getActiveRecipientToken(activeRecipientValue);
 
   useEffect(() => {
     if (!replyTo?.replyAll || ccEdited) {
@@ -80,6 +103,129 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
     );
     setCc(recalculatedCc);
   }, [ccEdited, currentAccount?.emailAddress, replyTo, to]);
+
+  useEffect(() => {
+    if (!activeRecipientField || !showRecipientSuggestions) {
+      setRecipientSuggestions([]);
+      setHighlightedRecipientIndex(-1);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timeoutId = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/emails/recipient-suggestions?q=${encodeURIComponent(activeRecipientToken)}&limit=${RECIPIENT_SUGGESTION_LIMIT}`
+        );
+
+        if (!response.ok || cancelled) {
+          return;
+        }
+
+        const suggestions = await response.json();
+        const normalizedToken = getNormalizedRecipient(activeRecipientToken);
+        const nextSuggestions = suggestions.filter((suggestion) => {
+          const normalizedSuggestion = getNormalizedRecipient(suggestion);
+          if (!normalizedSuggestion) {
+            return false;
+          }
+          if (!normalizedToken) {
+            return true;
+          }
+          return normalizedSuggestion.includes(normalizedToken) && normalizedSuggestion !== normalizedToken;
+        });
+
+        if (!cancelled) {
+          setRecipientSuggestions(nextSuggestions);
+          setHighlightedRecipientIndex(nextSuggestions.length > 0 ? 0 : -1);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setRecipientSuggestions([]);
+          setHighlightedRecipientIndex(-1);
+        }
+      }
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [activeRecipientField, activeRecipientToken, showRecipientSuggestions]);
+
+  const handleRecipientChange = (field, value) => {
+    if (field === 'cc') {
+      setCcEdited(true);
+      setCc(value);
+    } else {
+      setTo(value);
+    }
+    setActiveRecipientField(field);
+    setShowRecipientSuggestions(true);
+    setHighlightedRecipientIndex(-1);
+  };
+
+  const handleRecipientFocus = (field) => {
+    setActiveRecipientField(field);
+    setShowRecipientSuggestions(true);
+  };
+
+  const handleRecipientBlur = () => {
+    window.setTimeout(() => {
+      setShowRecipientSuggestions(false);
+      setHighlightedRecipientIndex(-1);
+    }, 100);
+  };
+
+  const applyRecipientSuggestion = (field, suggestion) => {
+    const currentValue = field === 'cc' ? cc : to;
+    const nextValue = replaceRecipientToken(currentValue, suggestion);
+    if (field === 'cc') {
+      setCcEdited(true);
+      setCc(nextValue);
+    } else {
+      setTo(nextValue);
+    }
+    setActiveRecipientField(field);
+    setShowRecipientSuggestions(false);
+    setHighlightedRecipientIndex(-1);
+  };
+
+  const handleRecipientKeyDown = (field, event) => {
+    if (!showRecipientSuggestions || activeRecipientField !== field || recipientSuggestions.length === 0) {
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setHighlightedRecipientIndex((currentIndex) => (currentIndex + 1) % recipientSuggestions.length);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setHighlightedRecipientIndex((currentIndex) => (
+        currentIndex <= 0 ? recipientSuggestions.length - 1 : currentIndex - 1
+      ));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      if (highlightedRecipientIndex < 0 || highlightedRecipientIndex >= recipientSuggestions.length) {
+        return;
+      }
+
+      event.preventDefault();
+      applyRecipientSuggestion(field, recipientSuggestions[highlightedRecipientIndex]);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setShowRecipientSuggestions(false);
+      setHighlightedRecipientIndex(-1);
+    }
+  };
 
   const handleSend = async () => {
     if (!to.trim()) { setError('Please enter a recipient'); return; }
@@ -170,13 +316,36 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
           <div className="compose-field">
             <label>To</label>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input
-                type="text"
-                value={to}
-                onChange={e => setTo(e.target.value)}
-                placeholder="recipient@example.com"
-                style={{ flex: 1 }}
-              />
+              <div className="compose-recipient-input-wrap" style={{ flex: 1 }}>
+                <input
+                  type="text"
+                  value={to}
+                  onChange={e => handleRecipientChange('to', e.target.value)}
+                  onKeyDown={e => handleRecipientKeyDown('to', e)}
+                  onFocus={() => handleRecipientFocus('to')}
+                  onBlur={handleRecipientBlur}
+                  placeholder="recipient@example.com"
+                  autoComplete="off"
+                  style={{ flex: 1 }}
+                />
+                {showRecipientSuggestions && activeRecipientField === 'to' && recipientSuggestions.length > 0 && (
+                  <div className="compose-recipient-suggestions">
+                    {recipientSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        className={`compose-recipient-suggestion${suggestion === recipientSuggestions[highlightedRecipientIndex] ? ' is-highlighted' : ''}`}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applyRecipientSuggestion('to', suggestion);
+                        }}
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {!showCc && (
                 <button className="compose-cc-btn" onClick={() => setShowCc(true)}>Cc</button>
               )}
@@ -186,15 +355,35 @@ function ComposeEmail({ accounts, onClose, onSent, replyTo, forwardEmail }) {
           {showCc && (
             <div className="compose-field">
               <label>Cc</label>
-              <input
-                type="text"
-                value={cc}
-                onChange={e => {
-                  setCcEdited(true);
-                  setCc(e.target.value);
-                }}
-                placeholder="cc@example.com"
-              />
+              <div className="compose-recipient-input-wrap">
+                <input
+                  type="text"
+                  value={cc}
+                  onChange={e => handleRecipientChange('cc', e.target.value)}
+                  onKeyDown={e => handleRecipientKeyDown('cc', e)}
+                  onFocus={() => handleRecipientFocus('cc')}
+                  onBlur={handleRecipientBlur}
+                  placeholder="cc@example.com"
+                  autoComplete="off"
+                />
+                {showRecipientSuggestions && activeRecipientField === 'cc' && recipientSuggestions.length > 0 && (
+                  <div className="compose-recipient-suggestions">
+                    {recipientSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        className={`compose-recipient-suggestion${suggestion === recipientSuggestions[highlightedRecipientIndex] ? ' is-highlighted' : ''}`}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applyRecipientSuggestion('cc', suggestion);
+                        }}
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

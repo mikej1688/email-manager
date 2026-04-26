@@ -215,7 +215,7 @@ public class ImapEmailService implements EmailProviderService {
 
             MimeMessage message = new MimeMessage(session);
             message.setFrom(new InternetAddress(account.getEmailAddress()));
-            message.setRecipients(MimeMessage.RecipientType.TO, InternetAddress.parse(to));
+            message.setRecipients(MimeMessage.RecipientType.TO, RecipientListUtils.toInternetAddresses(to));
             message.setSubject(subject);
             message.setText(body);
 

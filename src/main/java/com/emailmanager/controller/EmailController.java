@@ -4,8 +4,10 @@ import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.repository.EmailAccountRepository;
 import com.emailmanager.repository.EmailRepository;
+import com.emailmanager.service.RecipientAddressService;
 import com.emailmanager.service.email.GmailService;
 import com.emailmanager.service.email.ImapEmailService;
+import com.emailmanager.service.email.RecipientListUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -35,6 +37,7 @@ public class EmailController {
 
     private final EmailRepository emailRepository;
     private final EmailAccountRepository emailAccountRepository;
+    private final RecipientAddressService recipientAddressService;
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
 
@@ -339,6 +342,16 @@ public class EmailController {
     }
 
     /**
+     * Get saved recipient suggestions for compose autocomplete.
+     */
+    @GetMapping("/recipient-suggestions")
+    public ResponseEntity<List<String>> getRecipientSuggestions(
+            @RequestParam(defaultValue = "") String q,
+            @RequestParam(defaultValue = "8") int limit) {
+        return ResponseEntity.ok(recipientAddressService.getSuggestions(q, limit));
+    }
+
+    /**
      * Send a new email (compose)
      */
     @PostMapping("/send")
@@ -377,6 +390,8 @@ public class EmailController {
                         } catch (Exception e) {
                             log.error("Failed to save sent copy to local DB", e);
                         }
+
+                        recipientAddressService.recordRecipients(to, cc);
 
                         result.put("status", "sent");
                         result.put("message", "Email sent successfully");
@@ -450,6 +465,8 @@ public class EmailController {
                             log.error("Failed to save reply sent copy to local DB", e);
                         }
 
+                        recipientAddressService.recordRecipients(replyTo, cc);
+
                         result.put("status", "sent");
                         result.put("message", "Reply sent successfully");
                         return ResponseEntity.ok(result);
@@ -517,6 +534,8 @@ public class EmailController {
                             log.error("Failed to save forward sent copy to local DB", e);
                         }
 
+                        recipientAddressService.recordRecipients(to);
+
                         result.put("status", "sent");
                         result.put("message", "Email forwarded successfully");
                         return ResponseEntity.ok(result);
@@ -542,7 +561,7 @@ public class EmailController {
             return;
         }
 
-        for (String part : recipientList.split(",")) {
+        for (String part : RecipientListUtils.splitRecipientList(recipientList)) {
             String trimmed = part.trim();
             if (trimmed.isEmpty()) {
                 continue;
@@ -558,17 +577,7 @@ public class EmailController {
     }
 
     private String normalizeRecipient(String recipient) {
-        if (recipient == null) {
-            return "";
-        }
-
-        String trimmed = recipient.trim();
-        int start = trimmed.indexOf('<');
-        int end = trimmed.indexOf('>');
-        if (start >= 0 && end > start) {
-            trimmed = trimmed.substring(start + 1, end).trim();
-        }
-        return trimmed.toLowerCase();
+        return RecipientListUtils.normalizeRecipient(recipient);
     }
 
     private String mapCategoryToGmailLabel(Email.EmailCategory category) {

@@ -247,9 +247,11 @@ public class GmailService implements EmailProviderService {
         Session session = Session.getDefaultInstance(props, null);
         MimeMessage mimeMessage = new MimeMessage(session);
         mimeMessage.setFrom(new InternetAddress(from));
-        mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.TO, InternetAddress.parse(to));
+        mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.TO,
+                RecipientListUtils.toInternetAddresses(to));
         if (cc != null && !cc.isEmpty()) {
-            mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.CC, InternetAddress.parse(cc));
+            mimeMessage.setRecipients(jakarta.mail.Message.RecipientType.CC,
+                    RecipientListUtils.toInternetAddresses(cc));
         }
         mimeMessage.setSubject(subject);
         if (isHtml) {
@@ -536,7 +538,7 @@ public class GmailService implements EmailProviderService {
         }
 
         String ownAddress = normalizeRecipient(accountEmailAddress);
-        for (String part : recipientList.split(",")) {
+        for (String part : RecipientListUtils.splitRecipientList(recipientList)) {
             String trimmed = part.trim();
             if (trimmed.isEmpty()) {
                 continue;
@@ -555,7 +557,7 @@ public class GmailService implements EmailProviderService {
             return;
         }
 
-        for (String part : recipientList.split(",")) {
+        for (String part : RecipientListUtils.splitRecipientList(recipientList)) {
             String normalized = normalizeRecipient(part);
             if (!normalized.isEmpty()) {
                 recipients.add(normalized);
@@ -564,16 +566,6 @@ public class GmailService implements EmailProviderService {
     }
 
     private String normalizeRecipient(String recipient) {
-        if (recipient == null) {
-            return "";
-        }
-
-        String trimmed = recipient.trim();
-        int start = trimmed.indexOf('<');
-        int end = trimmed.indexOf('>');
-        if (start >= 0 && end > start) {
-            trimmed = trimmed.substring(start + 1, end).trim();
-        }
-        return trimmed.toLowerCase();
+        return RecipientListUtils.normalizeRecipient(recipient);
     }
 }

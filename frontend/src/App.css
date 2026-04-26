@@ -526,6 +526,43 @@ form {
   cursor: pointer;
 }
 
+.compose-recipient-input-wrap {
+  position: relative;
+  flex: 1;
+}
+
+.compose-recipient-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(32, 33, 36, 0.16);
+  overflow: hidden;
+  z-index: 2;
+}
+
+.compose-recipient-suggestion {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: #202124;
+  cursor: pointer;
+}
+
+.compose-recipient-suggestion:hover {
+  background: #f1f3f4;
+}
+
+.compose-recipient-suggestion.is-highlighted {
+  background: #e8f0fe;
+}
+
 .compose-cc-btn {
   background: none;
   border: 1px solid #dadce0;
