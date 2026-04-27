@@ -172,24 +172,33 @@ public class ImapEmailService implements EmailProviderService {
     @Override
     public boolean deleteEmail(EmailAccount account, String messageId) {
         Store store = null;
-        Folder inbox = null;
+        Folder folder = null;
 
         try {
             store = openImapStore(account);
 
-            inbox = store.getFolder("INBOX");
-            inbox.open(Folder.READ_WRITE);
+            Folder[] folders = store.getDefaultFolder().list("*");
+            for (Folder candidate : folders) {
+                if ((candidate.getType() & Folder.HOLDS_MESSAGES) == 0 || !candidate.exists()) {
+                    continue;
+                }
 
-            Message[] messages = inbox.search(new MessageIDTerm(messageId));
-            if (messages.length > 0) {
-                messages[0].setFlag(Flags.Flag.DELETED, true);
-                inbox.expunge();
-                return true;
+                try {
+                    candidate.open(Folder.READ_WRITE);
+                    Message[] messages = candidate.search(new MessageIDTerm(messageId));
+                    if (messages.length > 0) {
+                        messages[0].setFlag(Flags.Flag.DELETED, true);
+                        candidate.expunge();
+                        return true;
+                    }
+                } finally {
+                    closeQuietly(candidate);
+                }
             }
         } catch (Exception e) {
             log.error("Failed to delete email", e);
         } finally {
-            closeQuietly(inbox, store);
+            closeQuietly(folder, store);
         }
 
         return false;

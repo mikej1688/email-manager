@@ -362,6 +362,12 @@ form {
   background: #f1f3f4;
 }
 
+.move-dropdown-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: #e8eaed;
+}
+
 /* ===== Bulk actions ===== */
 .bulk-actions {
   display: flex;

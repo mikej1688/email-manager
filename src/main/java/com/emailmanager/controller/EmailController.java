@@ -2,8 +2,11 @@ package com.emailmanager.controller;
 
 import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.EmailFolder;
 import com.emailmanager.repository.EmailAccountRepository;
+import com.emailmanager.repository.EmailFolderRepository;
 import com.emailmanager.repository.EmailRepository;
+import com.emailmanager.repository.NotificationRepository;
 import com.emailmanager.service.RecipientAddressService;
 import com.emailmanager.service.email.GmailService;
 import com.emailmanager.service.email.ImapEmailService;
@@ -22,6 +25,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -37,6 +41,8 @@ public class EmailController {
 
     private final EmailRepository emailRepository;
     private final EmailAccountRepository emailAccountRepository;
+    private final EmailFolderRepository emailFolderRepository;
+    private final NotificationRepository notificationRepository;
     private final RecipientAddressService recipientAddressService;
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
@@ -70,10 +76,7 @@ public class EmailController {
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndCategoryNotIn(
-                            account,
-                            List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT, Email.EmailCategory.DRAFT),
-                            pageable);
+                    Page<Email> emails = emailRepository.findByAccount(account, pageable);
                     return ResponseEntity.ok(emails);
                 })
                 .orElse(ResponseEntity.notFound().build());
@@ -113,9 +116,33 @@ public class EmailController {
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndCategory(account, category, pageable);
+                    Page<Email> emails = emailRepository.findByAccountAndCategoryAndFolderIsNull(account, category,
+                            pageable);
                     return ResponseEntity.ok(emails);
                 })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Get emails by custom folder.
+     */
+    @GetMapping("/account/{accountId}/folder/{folderId}")
+    public ResponseEntity<Page<Email>> getEmailsByFolder(
+            @PathVariable Long accountId,
+            @PathVariable Long folderId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return emailAccountRepository.findById(accountId)
+                .map(account -> emailFolderRepository.findById(folderId)
+                        .filter(folder -> folder.getAccount().getId().equals(account.getId()))
+                        .map(folder -> {
+                            Pageable pageable = PageRequest.of(page, size,
+                                    Sort.by(Sort.Direction.DESC, "receivedDate"));
+                            Page<Email> emails = emailRepository.findByAccountAndFolder(account, folder, pageable);
+                            return ResponseEntity.ok(emails);
+                        })
+                        .orElse(ResponseEntity.notFound().build()))
                 .orElse(ResponseEntity.notFound().build());
     }
 
@@ -145,6 +172,28 @@ public class EmailController {
     public ResponseEntity<Email> getEmailById(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Search emails for an account by keyword
+     */
+    @GetMapping("/account/{accountId}/search")
+    public ResponseEntity<Page<Email>> searchEmails(
+            @PathVariable Long accountId,
+            @RequestParam String q,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        if (q == null || q.trim().isEmpty()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return emailAccountRepository.findById(accountId)
+                .map(account -> {
+                    Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
+                    Page<Email> emails = emailRepository.searchByAccount(account, q.trim(), pageable);
+                    return ResponseEntity.ok(emails);
+                })
                 .orElse(ResponseEntity.notFound().build());
     }
 
@@ -232,10 +281,11 @@ public class EmailController {
      * Delete email - trash on remote provider and remove locally
      */
     @DeleteMapping("/{id}")
+    @Transactional
     public ResponseEntity<Void> deleteEmail(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
-                    // Trash on remote provider
+                    // Delete on remote provider
                     try {
                         EmailAccount account = emailAccountRepository
                                 .findById(email.getAccount().getId()).orElse(null);
@@ -247,8 +297,10 @@ public class EmailController {
                             }
                         }
                     } catch (Exception e) {
-                        // Log but still delete locally
+                        log.warn("Remote delete failed for email {}: {}", id, e.getMessage());
                     }
+                    // Remove notifications referencing this email before deleting
+                    notificationRepository.deleteAll(notificationRepository.findByEmail(email));
                     emailRepository.delete(email);
                     return ResponseEntity.ok().<Void>build();
                 })
@@ -268,7 +320,7 @@ public class EmailController {
                                 .findById(email.getAccount().getId()).orElse(null);
                         if (account != null) {
                             if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
-                                gmailService.deleteEmail(account, email.getMessageId());
+                                gmailService.trashEmail(account, email.getMessageId());
                             } else {
                                 imapEmailService.deleteEmail(account, email.getMessageId());
                             }
@@ -331,6 +383,7 @@ public class EmailController {
                         } catch (Exception e) {
                             // Continue with local update
                         }
+                        email.setFolder(null);
                         email.setCategory(targetCategory);
                         Email updated = emailRepository.save(email);
                         return ResponseEntity.ok(updated);
@@ -339,6 +392,92 @@ public class EmailController {
                     }
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Get custom folders for an account.
+     */
+    @GetMapping("/account/{accountId}/folders")
+    public ResponseEntity<List<EmailFolder>> getFoldersByAccount(@PathVariable Long accountId) {
+        return emailAccountRepository.findById(accountId)
+                .map(account -> ResponseEntity.ok(emailFolderRepository.findByAccountOrderByDisplayOrder(account)))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Create a custom folder for an account.
+     */
+    @PostMapping("/account/{accountId}/folders")
+    @Transactional
+    public ResponseEntity<?> createFolder(@PathVariable Long accountId, @RequestBody Map<String, String> request) {
+        String name = request.getOrDefault("name", "").trim();
+        if (name.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Folder name is required"));
+        }
+
+        return emailAccountRepository.findById(accountId)
+                .<ResponseEntity<?>>map(account -> {
+                    if (emailFolderRepository.findByAccountAndName(account, name).isPresent()) {
+                        return ResponseEntity.badRequest().body(Map.of(
+                                "status", "error",
+                                "message", "A folder with that name already exists"));
+                    }
+
+                    EmailFolder folder = new EmailFolder();
+                    folder.setAccount(emailAccountRepository.getReferenceById(account.getId()));
+                    folder.setName(name);
+                    folder.setDescription(request.getOrDefault("description", ""));
+                    folder.setFolderPath(name);
+                    folder.setIsSystemFolder(false);
+                    folder.setDisplayOrder(emailFolderRepository.findByAccount(account).size());
+
+                    return ResponseEntity.ok(emailFolderRepository.save(folder));
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Move an email into a custom folder.
+     */
+    @PutMapping("/{id}/move-to-folder")
+    @Transactional
+    public ResponseEntity<Email> moveEmailToCustomFolder(@PathVariable Long id, @RequestParam Long folderId) {
+        Optional<Email> emailOptional = emailRepository.findById(id);
+        if (emailOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Optional<EmailFolder> folderOptional = emailFolderRepository.findById(folderId);
+        if (folderOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Email email = emailOptional.get();
+        EmailFolder folder = folderOptional.get();
+
+        if (!folder.getAccount().getId().equals(email.getAccount().getId())) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        try {
+            EmailAccount account = emailAccountRepository
+                    .findById(email.getAccount().getId()).orElse(null);
+            if (account != null) {
+                if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+                    gmailService.moveToFolder(account, email.getMessageId(), folder.getName());
+                } else {
+                    imapEmailService.moveToFolder(account, email.getMessageId(), folder.getName());
+                }
+            }
+        } catch (Exception e) {
+            // Continue with local update even if remote move fails.
+        }
+
+        email.setFolder(folder);
+        Email updated = emailRepository.save(email);
+        return ResponseEntity.ok(updated);
     }
 
     /**
@@ -440,12 +579,18 @@ public class EmailController {
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     boolean success;
+                    Map<String, String> result = new HashMap<>();
                     if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
-                        success = gmailService.sendComposedEmail(account, to, cc, subject, body, isHtml);
+                        try {
+                            success = gmailService.sendComposedEmail(account, to, cc, subject, body, isHtml);
+                        } catch (RuntimeException e) {
+                            result.put("status", "error");
+                            result.put("message", e.getMessage() != null ? e.getMessage() : "Failed to send email");
+                            return ResponseEntity.<Map<String, String>>internalServerError().body(result);
+                        }
                     } else {
                         success = imapEmailService.sendEmail(account, to, subject, body);
                     }
-                    Map<String, String> result = new HashMap<>();
                     if (success) {
                         // Save a local copy in Sent folder
                         Email sent = new Email();

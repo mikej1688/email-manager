@@ -147,10 +147,21 @@ public class GmailService implements EmailProviderService {
     public boolean deleteEmail(EmailAccount account, String messageId) {
         try {
             Gmail service = getGmailService(account);
+            service.users().messages().delete("me", messageId).execute();
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to permanently delete email", e);
+            return false;
+        }
+    }
+
+    public boolean trashEmail(EmailAccount account, String messageId) {
+        try {
+            Gmail service = getGmailService(account);
             service.users().messages().trash("me", messageId).execute();
             return true;
         } catch (Exception e) {
-            log.error("Failed to delete email", e);
+            log.error("Failed to move email to trash", e);
             return false;
         }
     }
@@ -172,6 +183,9 @@ public class GmailService implements EmailProviderService {
             service.users().messages().send("me", message).execute();
             log.info("Email sent successfully from {} to {}", account.getEmailAddress(), to);
             return true;
+        } catch (RuntimeException e) {
+            log.error("Failed to send email from {}: {}", account.getEmailAddress(), e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error("Failed to send email from {}", account.getEmailAddress(), e);
             return false;

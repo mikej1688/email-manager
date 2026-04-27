@@ -2,12 +2,77 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ComposeEmail from './ComposeEmail';
 
 const POLL_INTERVAL_MS = 60000; // 60 seconds
-const EMAILS_PER_PAGE = 100;
+const PAGE_SIZE = 50;
+const SYSTEM_FOLDER_OPTIONS = ['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED', 'SENT', 'DRAFT'];
+
+const buildFilterUrl = (accountId, currentFilter) => {
+  let url = `/api/emails/account/${accountId}`;
+  if (currentFilter === 'unread') url += '/unread';
+  else if (currentFilter === 'urgent') url += '/importance/URGENT';
+  else if (currentFilter === 'high') url += '/importance/HIGH';
+  else if (currentFilter.startsWith('category:')) url += `/category/${currentFilter.slice('category:'.length)}`;
+  else if (currentFilter.startsWith('folder:')) url += `/folder/${currentFilter.slice('folder:'.length)}`;
+  return url;
+};
+
+const doesEmailMatchFilter = (email, currentFilter) => {
+  if (currentFilter === 'all') return true;
+  if (currentFilter === 'unread') return !email.isRead;
+  if (currentFilter === 'urgent') return email.importance === 'URGENT';
+  if (currentFilter === 'high') return email.importance === 'HIGH';
+  if (currentFilter.startsWith('category:')) {
+    return email.category === currentFilter.slice('category:'.length) && !email.folder;
+  }
+  if (currentFilter.startsWith('folder:')) return String(email.folder?.id || '') === currentFilter.slice('folder:'.length);
+  return true;
+};
+
+const doesCustomFolderMoveMatchFilter = (currentFilter, targetFolderId) => {
+  if (currentFilter === 'all') return true;
+  if (currentFilter.startsWith('folder:')) {
+    return currentFilter === `folder:${targetFolderId}`;
+  }
+  if (currentFilter.startsWith('category:')) {
+    return false;
+  }
+  return true;
+};
+
+const PERMANENT_DELETE_CONFIRMATION = 'you are going to permanently delete the email(s), do you want to go ahead?';
+
+const buildFilterOptions = (customFolders) => {
+  const baseOptions = [
+    { value: 'all', label: 'All' },
+    { value: 'high', label: 'High Priority' },
+    { value: 'unread', label: 'Unread' },
+    { value: 'urgent', label: 'Urgent' },
+    ...SYSTEM_FOLDER_OPTIONS.map((category) => ({
+      value: `category:${category}`,
+      label: category
+    }))
+  ];
+
+  const dedupedByLabel = new Map();
+  [...baseOptions, ...customFolders.map((folder) => ({
+    value: `folder:${folder.id}`,
+    label: folder.name
+  }))].forEach((option) => {
+    const normalizedLabel = option.label.trim().toUpperCase();
+    if (!normalizedLabel || dedupedByLabel.has(normalizedLabel)) {
+      return;
+    }
+    dedupedByLabel.set(normalizedLabel, option);
+  });
+
+  return Array.from(dedupedByLabel.values())
+    .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
+};
 
 function EmailList({ accounts }) {
   const [emails, setEmails] = useState([]);
+  const [customFolders, setCustomFolders] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState(null);
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState('category:INBOX');
   const [loading, setLoading] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailLoading, setEmailLoading] = useState(false);
@@ -16,6 +81,13 @@ function EmailList({ accounts }) {
   const [actionFeedback, setActionFeedback] = useState('');
   const [newEmailCount, setNewEmailCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalElements, setTotalElements] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchContainerRef = useRef(null);
 
   // Stable refs so the polling interval doesn't go stale
   const selectedAccountRef = useRef(selectedAccount);
@@ -31,16 +103,59 @@ function EmailList({ accounts }) {
     }
   }, [accounts, selectedAccount]);
 
-  const totalPages = Math.max(1, Math.ceil(emails.length / EMAILS_PER_PAGE));
-  const currentPageStart = (currentPage - 1) * EMAILS_PER_PAGE;
-  const currentPageEmails = emails.slice(currentPageStart, currentPageStart + EMAILS_PER_PAGE);
+  const currentPageEmails = emails;
   const currentPageEmailIds = currentPageEmails.map(email => email.id);
   const allCurrentPageSelected = currentPageEmailIds.length > 0
     && currentPageEmailIds.every(emailId => selectedEmails.has(emailId));
+  const filterOptions = buildFilterOptions(customFolders);
 
   useEffect(() => {
     setCurrentPage(prevPage => Math.min(prevPage, totalPages));
   }, [totalPages]);
+
+  // When the current page becomes empty but the backend still has emails (due to
+  // deletions), automatically fetch the next available page.
+  useEffect(() => {
+    if (loading || emails.length > 0 || totalElements === 0 || !selectedAccount) return;
+    const nextPage = currentPage > 1 ? currentPage - 1 : 1;
+    setCurrentPage(nextPage);
+    fetchEmails(selectedAccount, filter, false, nextPage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emails.length, loading, totalElements]);
+
+  // Debounced keyword search
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q || !selectedAccount) {
+      setSearchResults([]);
+      setSearchOpen(false);
+      return;
+    }
+    setSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/emails/account/${selectedAccount}/search?q=${encodeURIComponent(q)}&page=0&size=10`);
+        if (res.ok) {
+          const data = await res.json();
+          setSearchResults(data.content || []);
+          setSearchOpen(true);
+        }
+      } catch (_) {}
+      finally { setSearchLoading(false); }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, selectedAccount]);
+
+  // Close search dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+        setSearchOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Auto-clear feedback
   useEffect(() => {
@@ -68,12 +183,7 @@ function EmailList({ accounts }) {
         // Sync from Gmail before checking for new arrivals
         await fetch(`/api/accounts/${accountId}/sync`, { method: 'POST' });
 
-        let url = `/api/emails/account/${accountId}`;
-        if (currentFilter === 'unread') url += '/unread';
-        else if (currentFilter === 'urgent') url += '/importance/URGENT';
-        else if (currentFilter === 'high') url += '/importance/HIGH';
-        else if (currentFilter === 'sent') url += '/category/SENT';
-        else if (currentFilter === 'draft') url += '/category/DRAFT';
+        const url = buildFilterUrl(accountId, currentFilter) + `?page=0&size=${PAGE_SIZE}`;
 
         const response = await fetch(url);
         if (!response.ok) return;
@@ -99,21 +209,19 @@ function EmailList({ accounts }) {
   }, []); // empty deps — uses refs to stay stable
 
   // Fetch local DB emails (no Gmail sync)
-  const fetchEmails = useCallback(async (accountId = selectedAccount, currentFilter = filter, resetPage = true) => {
+  const fetchEmails = useCallback(async (accountId = selectedAccount, currentFilter = filter, resetPage = true, page = 1) => {
     if (!accountId) return;
     setLoading(true);
     setNewEmailCount(0);
     try {
-      let url = `/api/emails/account/${accountId}`;
-      if (currentFilter === 'unread') url += '/unread';
-      else if (currentFilter === 'urgent') url += '/importance/URGENT';
-      else if (currentFilter === 'high') url += '/importance/HIGH';
-      else if (currentFilter === 'sent') url += '/category/SENT';
-      else if (currentFilter === 'draft') url += '/category/DRAFT';
+      const backendPage = resetPage ? 0 : page - 1;
+      const url = buildFilterUrl(accountId, currentFilter) + `?page=${backendPage}&size=${PAGE_SIZE}`;
 
       const response = await fetch(url);
       const data = await response.json();
       setEmails(data.content || []);
+      setTotalPages(data.totalPages || 1);
+      setTotalElements(data.totalElements || 0);
       setSelectedEmails(new Set());
       if (resetPage) setCurrentPage(1);
     } catch (error) {
@@ -123,11 +231,26 @@ function EmailList({ accounts }) {
     }
   }, [filter, selectedAccount]);
 
+  const fetchCustomFolders = useCallback(async (accountId = selectedAccount) => {
+    if (!accountId) return;
+    try {
+      const response = await fetch(`/api/emails/account/${accountId}/folders`);
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      setCustomFolders(data || []);
+    } catch (error) {
+      console.error('Error fetching folders:', error);
+    }
+  }, [selectedAccount]);
+
   useEffect(() => {
     if (selectedAccount) {
       fetchEmails();
+      fetchCustomFolders();
     }
-  }, [fetchEmails, selectedAccount]);
+  }, [fetchCustomFolders, fetchEmails, selectedAccount]);
 
   // Sync from Gmail then reload local list
   const syncAndRefresh = async () => {
@@ -218,17 +341,93 @@ function EmailList({ accounts }) {
     try {
       const response = await fetch(`/api/emails/${emailId}/move?category=${category}`, { method: 'PUT' });
       if (response.ok) {
-        setEmails(prev => prev.filter(e => e.id !== emailId));
+        const updated = await response.json();
+        setEmails(prev => prev.filter(e => e.id !== emailId || doesEmailMatchFilter(updated, filter))
+          .map(e => e.id === emailId ? updated : e));
         setSelectedEmails(prev => {
           const next = new Set(prev);
           next.delete(emailId);
           return next;
         });
-        if (selectedEmail && selectedEmail.id === emailId) setSelectedEmail(null);
+        if (selectedEmail && selectedEmail.id === emailId) {
+          if (doesEmailMatchFilter(updated, filter)) {
+            setSelectedEmail(updated);
+          } else {
+            setSelectedEmail(null);
+          }
+        }
         setActionFeedback(`Moved to ${category}`);
       }
     } catch (error) {
       console.error('Error moving email:', error);
+    }
+  };
+
+  const moveEmailToCustomFolder = async (emailId, folderId) => {
+    try {
+      const response = await fetch(`/api/emails/${emailId}/move-to-folder?folderId=${folderId}`, { method: 'PUT' });
+      if (response.ok) {
+        const updated = await response.json();
+        const targetFolder = customFolders.find(folder => folder.id === folderId);
+        const shouldRemainVisible = doesCustomFolderMoveMatchFilter(filter, folderId);
+        const updatedEmail = {
+          ...updated,
+          folder: targetFolder ? { id: targetFolder.id, name: targetFolder.name } : updated.folder
+        };
+        setEmails(prev => prev.filter(e => e.id !== emailId || shouldRemainVisible)
+          .map(e => e.id === emailId ? updatedEmail : e));
+        if (selectedEmail && selectedEmail.id === emailId) {
+          if (shouldRemainVisible) {
+            setSelectedEmail(updatedEmail);
+          } else {
+            setSelectedEmail(null);
+          }
+        }
+        setActionFeedback(`Moved to ${targetFolder?.name || 'folder'}`);
+      }
+    } catch (error) {
+      console.error('Error moving email to folder:', error);
+      setActionFeedback('Failed to move to folder');
+    }
+  };
+
+  const createCustomFolder = async () => {
+    if (!selectedAccount) {
+      return;
+    }
+
+    const name = window.prompt('Enter a name for the new folder:');
+    if (!name) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/emails/account/${selectedAccount}/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() })
+      });
+
+      if (!response.ok) {
+        let msg = 'Failed to create folder';
+        try {
+          const data = await response.json();
+          msg = data.message || msg;
+        } catch (_) {}
+        setActionFeedback(msg);
+        return;
+      }
+
+      const folder = await response.json();
+      setCustomFolders(prev => [...prev, folder].sort((left, right) => left.name.localeCompare(right.name)));
+      setActionFeedback(`Created folder ${folder.name}`);
+
+      if (selectedEmail) {
+        await moveEmailToCustomFolder(selectedEmail.id, folder.id);
+      }
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      setActionFeedback('Failed to create folder');
     }
   };
 
@@ -280,6 +479,27 @@ function EmailList({ accounts }) {
     }
   };
 
+  const permanentlyDeleteEmail = async (emailId) => {
+    try {
+      const response = await fetch(`/api/emails/${emailId}`, { method: 'DELETE' });
+      if (response.ok) {
+        setEmails(prev => prev.filter(e => e.id !== emailId));
+        setSelectedEmails(prev => {
+          const next = new Set(prev);
+          next.delete(emailId);
+          return next;
+        });
+        if (selectedEmail && selectedEmail.id === emailId) {
+          setSelectedEmail(null);
+        }
+        setActionFeedback('Email permanently deleted');
+      }
+    } catch (error) {
+      console.error('Error permanently deleting email:', error);
+      setActionFeedback('Failed to permanently delete');
+    }
+  };
+
   const toggleSelectAllOnPage = () => {
     setSelectedEmails(prev => {
       const next = new Set(prev);
@@ -295,11 +515,15 @@ function EmailList({ accounts }) {
   };
 
   const goToPreviousPage = () => {
-    setCurrentPage(prevPage => Math.max(prevPage - 1, 1));
+    const newPage = Math.max(currentPage - 1, 1);
+    setCurrentPage(newPage);
+    fetchEmails(selectedAccount, filter, false, newPage);
   };
 
   const goToNextPage = () => {
-    setCurrentPage(prevPage => Math.min(prevPage + 1, totalPages));
+    const newPage = Math.min(currentPage + 1, totalPages);
+    setCurrentPage(newPage);
+    fetchEmails(selectedAccount, filter, false, newPage);
   };
 
   const toggleSelect = (emailId, e) => {
@@ -338,16 +562,123 @@ function EmailList({ accounts }) {
     return <span className={classes[importance] || 'importance-badge'}>{importance}</span>;
   };
 
-  const isOutgoingFilter = filter === 'sent' || filter === 'draft';
+  const activeCategoryFilter = filter.startsWith('category:') ? filter.slice('category:'.length) : '';
+  const isOutgoingFilter = activeCategoryFilter === 'SENT' || activeCategoryFilter === 'DRAFT';
+  const isTrashFilter = activeCategoryFilter === 'TRASH';
+
+  const handleDeleteEmail = async (emailId) => {
+    if (isTrashFilter) {
+      const confirmed = window.confirm(PERMANENT_DELETE_CONFIRMATION);
+      if (!confirmed) {
+        return;
+      }
+      await permanentlyDeleteEmail(emailId);
+      return;
+    }
+
+    await trashEmail(emailId);
+  };
+
+  const bulkDeleteEmails = async () => {
+    if (selectedEmails.size === 0) {
+      return;
+    }
+
+    if (isTrashFilter) {
+      const confirmed = window.confirm(PERMANENT_DELETE_CONFIRMATION);
+      if (!confirmed) {
+        return;
+      }
+      for (const id of selectedEmails) {
+        await permanentlyDeleteEmail(id);
+      }
+      setSelectedEmails(new Set());
+      return;
+    }
+
+    await bulkTrash();
+  };
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '1rem', flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0 }}>Emails</h2>
-        <button className="btn btn-primary" onClick={() => setComposeMode('compose')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.95rem' }}>
-          ✏️ Compose
-        </button>
+
+        {/* Search bar */}
+        <div ref={searchContainerRef} style={{ position: 'relative', flex: '1', maxWidth: '480px', minWidth: '220px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #ddd', borderRadius: '24px', padding: '6px 14px', background: '#f1f3f4', gap: '6px' }}>
+            <span style={{ color: '#80868b', fontSize: '1rem' }}>🔍</span>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => searchQuery.trim() && setSearchOpen(true)}
+              placeholder="Search emails..."
+              style={{ border: 'none', outline: 'none', background: 'transparent', flex: 1, fontSize: '0.95rem' }}
+            />
+            {searchLoading && <span style={{ fontSize: '0.75rem', color: '#80868b' }}>…</span>}
+            {searchQuery && (
+              <button
+                onClick={() => { setSearchQuery(''); setSearchResults([]); setSearchOpen(false); }}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#80868b', fontSize: '1rem', lineHeight: 1, padding: 0 }}
+                title="Clear search"
+              >✕</button>
+            )}
+          </div>
+
+          {searchOpen && (
+            <div style={{
+              position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
+              background: '#fff', border: '1px solid #ddd', borderRadius: '8px',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.15)', zIndex: 200,
+              maxHeight: '400px', overflowY: 'auto'
+            }}>
+              {searchResults.length === 0 ? (
+                <div style={{ padding: '12px 16px', color: '#80868b', fontSize: '0.9rem' }}>No results found</div>
+              ) : searchResults.map(email => (
+                <div
+                  key={email.id}
+                  onClick={() => { setSearchOpen(false); setSearchQuery(''); openEmail(email); }}
+                  style={{ padding: '10px 16px', cursor: 'pointer', borderBottom: '1px solid #f1f3f4' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#f1f3f4'}
+                  onMouseLeave={e => e.currentTarget.style.background = ''}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                    <span style={{ fontWeight: email.isRead ? 400 : 600, fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                      {email.subject || '(no subject)'}
+                    </span>
+                    <span style={{ fontSize: '0.78rem', color: '#80868b', whiteSpace: 'nowrap' }}>
+                      {email.receivedDate ? new Date(email.receivedDate).toLocaleDateString() : ''}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {email.fromAddress}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {totalElements > 0 && (
+            <span style={{
+              fontSize: '0.82rem',
+              color: '#fff',
+              background: '#1a73e8',
+              padding: '2px 10px',
+              borderRadius: '12px',
+              fontWeight: 500,
+              whiteSpace: 'nowrap'
+            }}>
+              {totalElements} email{totalElements !== 1 ? 's' : ''}
+            </span>
+          )}
+          <button className="btn btn-primary" onClick={() => setComposeMode('compose')}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.95rem' }}>
+            ✏️ Compose
+          </button>
+        </div>
       </div>
 
       {actionFeedback && (
@@ -389,12 +720,9 @@ function EmailList({ accounts }) {
               onChange={(e) => setFilter(e.target.value)}
               style={{padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd'}}
             >
-              <option value="all">All</option>
-              <option value="unread">Unread</option>
-              <option value="urgent">Urgent</option>
-              <option value="high">High Priority</option>
-              <option value="sent">Sent</option>
-              <option value="draft">Drafts</option>
+              {filterOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </div>
 
@@ -405,7 +733,7 @@ function EmailList({ accounts }) {
           {selectedEmails.size > 0 && (
             <div className="bulk-actions">
               <span style={{ fontSize: '0.85rem', color: '#5f6368' }}>{selectedEmails.size} selected</span>
-              <button className="btn-icon" title="Delete selected" onClick={bulkTrash}>🗑️</button>
+              <button className="btn-icon" title={isTrashFilter ? 'Permanently delete selected' : 'Delete selected'} onClick={bulkDeleteEmails}>🗑️</button>
               <button className="btn-icon" title="Archive selected" onClick={bulkArchive}>📥</button>
             </div>
           )}
@@ -422,7 +750,7 @@ function EmailList({ accounts }) {
                 {allCurrentPageSelected ? 'Clear page selection' : 'Select all on page'}
               </button>
               <span className="email-page-summary">
-                Showing {currentPageStart + 1}-{Math.min(currentPageStart + currentPageEmails.length, emails.length)} of {emails.length}
+                Showing {(currentPage - 1) * PAGE_SIZE + 1}-{(currentPage - 1) * PAGE_SIZE + emails.length} of {totalElements}
               </span>
             </div>
 
@@ -463,7 +791,7 @@ function EmailList({ accounts }) {
                         {new Date(email.receivedDate).toLocaleString()}
                         <span className="email-item-actions" onClick={e => e.stopPropagation()}>
                           <button className="btn-icon-sm" title="Archive" onClick={() => archiveEmail(email.id)}>📥</button>
-                          <button className="btn-icon-sm" title="Delete" onClick={() => trashEmail(email.id)}>🗑️</button>
+                          <button className="btn-icon-sm" title={isTrashFilter ? 'Permanently delete' : 'Delete'} onClick={() => handleDeleteEmail(email.id)}>🗑️</button>
                         </span>
                       </div>
                     </div>
@@ -511,14 +839,22 @@ function EmailList({ accounts }) {
             <div className="email-toolbar">
               <div className="email-toolbar-left">
                 <button className="btn-icon" title="Archive" onClick={() => archiveEmail(selectedEmail.id)}>📥</button>
-                <button className="btn-icon" title="Delete" onClick={() => trashEmail(selectedEmail.id)}>🗑️</button>
+                <button className="btn-icon" title={isTrashFilter ? 'Permanently delete' : 'Delete'} onClick={() => handleDeleteEmail(selectedEmail.id)}>🗑️</button>
                 <span className="toolbar-divider" />
                 <div className="move-dropdown">
                   <button className="btn-icon" title="Move to...">📁</button>
                   <div className="move-dropdown-content">
-                    {['INBOX', 'IMPORTANT', 'SOCIAL', 'PROMOTIONS', 'UPDATES', 'FORUMS', 'SPAM', 'TRASH', 'ARCHIVED', 'SENT', 'DRAFT'].map(cat => (
+                    {SYSTEM_FOLDER_OPTIONS.map(cat => (
                       <button key={cat} onClick={() => moveEmail(selectedEmail.id, cat)}>{cat}</button>
                     ))}
+                    {customFolders.length > 0 && <div className="move-dropdown-divider" />}
+                    {customFolders.map(folder => (
+                      <button key={folder.id} onClick={() => moveEmailToCustomFolder(selectedEmail.id, folder.id)}>
+                        {folder.name}
+                      </button>
+                    ))}
+                    <div className="move-dropdown-divider" />
+                    <button onClick={createCustomFolder}>+ New folder...</button>
                   </div>
                 </div>
                 <span className="toolbar-divider" />
@@ -561,6 +897,7 @@ function EmailList({ accounts }) {
                   {selectedEmail.importance === 'HIGH' && <span style={{marginLeft: '8px', color: '#f29900', fontSize: '0.9rem', fontWeight: 500}}>● HIGH</span>}
                   {selectedEmail.isPhishing && <span style={{marginLeft: '8px', color: '#d93025', fontSize: '0.85rem', background: '#fce8e6', padding: '2px 8px', borderRadius: '4px'}}>⚠️ Phishing</span>}
                   {selectedEmail.isSpam && <span style={{marginLeft: '8px', color: '#80868b', fontSize: '0.85rem', background: '#f1f3f4', padding: '2px 8px', borderRadius: '4px'}}>🗑️ Spam</span>}
+                  {selectedEmail.folder?.name && <span style={{marginLeft: '8px', color: '#1967d2', fontSize: '0.85rem', background: '#e8f0fe', padding: '2px 8px', borderRadius: '4px'}}>Folder: {selectedEmail.folder.name}</span>}
                 </div>
                 {/* Sender row */}
                 <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
