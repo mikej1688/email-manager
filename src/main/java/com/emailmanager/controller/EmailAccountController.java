@@ -119,7 +119,8 @@ public class EmailAccountController {
     }
 
     /**
-     * Sync specific email account
+     * Sync specific email account (incremental — only fetches emails newer than
+     * the last sync). Used by background polling in the frontend.
      */
     @PostMapping("/{id}/sync")
     public ResponseEntity<String> syncAccount(@PathVariable Long id) {
@@ -127,6 +128,21 @@ public class EmailAccountController {
                 .map(account -> {
                     emailSyncService.syncAccount(account);
                     return ResponseEntity.ok("Sync completed successfully");
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Force a full re-sync for a Gmail account — resets the incremental-sync
+     * state so every email in every label is fetched from Gmail from the
+     * beginning, not just emails newer than the last sync time.
+     */
+    @PostMapping("/{id}/full-resync")
+    public ResponseEntity<String> fullResyncAccount(@PathVariable Long id) {
+        return emailAccountService.findById(id)
+                .map(account -> {
+                    emailSyncService.fullResyncAccount(account);
+                    return ResponseEntity.ok("Full re-sync completed successfully");
                 })
                 .orElse(ResponseEntity.notFound().build());
     }

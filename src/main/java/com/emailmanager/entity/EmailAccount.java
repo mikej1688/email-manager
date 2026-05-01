@@ -59,6 +59,9 @@ public class EmailAccount {
 
     private LocalDateTime lastSyncTime;
 
+    @Column(nullable = false)
+    private Boolean initialSyncComplete = false;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 

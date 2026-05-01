@@ -202,8 +202,8 @@ function AccountManagement({ onAccountsChange }) {
 
   const syncAccount = async (id) => {
     try {
-      await fetch(`/api/accounts/${id}/sync`, { method: 'POST' });
-      alert('Sync started successfully');
+      await fetch(`/api/accounts/${id}/full-resync`, { method: 'POST' });
+      alert('Full sync completed — all emails have been loaded from Gmail.');
     } catch (error) {
       console.error('Error syncing account:', error);
       alert('Failed to sync account');

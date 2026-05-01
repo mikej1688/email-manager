@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Service for synchronizing emails from various email accounts
@@ -31,6 +32,9 @@ public class EmailSyncService {
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
     private final EmailClassificationService classificationService;
+
+    @Value("${email.sync.fetch.limit:50}")
+    private int fetchLimit;
 
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
@@ -88,8 +92,14 @@ public class EmailSyncService {
 
         EmailProviderService providerService = getProviderService(account);
 
-        // Fetch new emails
-        List<Email> newEmails = providerService.fetchNewEmails(account, 50);
+        // Fetch new emails — returns null if the fetch failed fatally (e.g. network
+        // error on the list call itself), so we must NOT mark the sync complete.
+        List<Email> newEmails = providerService.fetchNewEmails(account, fetchLimit);
+        if (newEmails == null) {
+            log.warn("fetchNewEmails returned null for {} — skipping save and not marking sync complete",
+                    account.getEmailAddress());
+            return;
+        }
 
         // Save new emails
         int savedCount = 0;
@@ -111,6 +121,11 @@ public class EmailSyncService {
             }
         }
 
+        if (account.getProvider() == EmailAccount.EmailProvider.GMAIL
+                && !Boolean.TRUE.equals(account.getInitialSyncComplete())) {
+            account.setInitialSyncComplete(true);
+        }
+
         // Update last sync time
         account.setLastSyncTime(LocalDateTime.now());
         emailAccountRepository.save(account);
@@ -126,6 +141,25 @@ public class EmailSyncService {
             case GMAIL -> gmailService;
             case YAHOO, OUTLOOK, IMAP_GENERIC -> imapEmailService;
         };
+    }
+
+    /**
+     * Force a full re-sync for an account by clearing the incremental-sync state
+     * flags first. This causes {@code buildAfterFilter} in GmailService to return
+     * an empty filter so every email in every label is fetched from Gmail, not
+     * just emails newer than the last sync time.
+     */
+    @Transactional
+    public void fullResyncAccount(EmailAccount account) {
+        log.info("Starting full re-sync for account: {} (resetting sync state)", account.getEmailAddress());
+        // Reset the incremental-sync flags so fetchNewEmails sees no time filter.
+        account.setInitialSyncComplete(false);
+        account.setLastSyncTime(null);
+        emailAccountRepository.save(account);
+
+        // Now run a normal sync — it will fetch ALL emails because initialSyncComplete
+        // is false, and will set initialSyncComplete=true again on completion.
+        syncAccount(account);
     }
 
     /**

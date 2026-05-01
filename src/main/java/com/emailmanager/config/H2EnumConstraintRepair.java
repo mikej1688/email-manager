@@ -29,6 +29,7 @@ public class H2EnumConstraintRepair {
         }
 
         normalizeDeprecatedProviders();
+        clearSystemLabelFolderMisassignment();
 
         repairConstraint(
                 "EMAILS",
@@ -41,6 +42,40 @@ public class H2EnumConstraintRepair {
                 "PROVIDER",
                 Arrays.stream(EmailAccount.EmailProvider.values()).map(Enum::name).toList(),
                 "email_account_provider_check");
+    }
+
+    /**
+     * Emails saved before the resolveFolder fix had folder_id set to EmailFolder
+     * rows for system labels (Inbox, Sent, Spam, etc.). The category-based query
+     * (findByAccountAndCategoryAndFolderIsNull) requires folder_id IS NULL for
+     * system labels, so those emails were invisible in every folder view.
+     *
+     * This migration clears folder_id on such emails and removes the stale
+     * EmailFolder rows so that routing works correctly going forward.
+     */
+    private void clearSystemLabelFolderMisassignment() {
+        try {
+            String systemNames = String.join(",",
+                    "'Inbox'", "'Sent'", "'Trash'", "'Spam'", "'Drafts'",
+                    "'Important'", "'Starred'", "'Social'", "'Promotions'",
+                    "'Updates'", "'Forums'");
+
+            int updated = jdbcTemplate.update(
+                    "UPDATE emails SET folder_id = NULL "
+                            + "WHERE folder_id IN "
+                            + "(SELECT id FROM email_folders WHERE name IN (" + systemNames + "))");
+
+            int deleted = jdbcTemplate.update(
+                    "DELETE FROM email_folders WHERE name IN (" + systemNames + ")");
+
+            if (updated > 0 || deleted > 0) {
+                log.info("Startup repair: cleared folder_id on {} email(s) mis-assigned to "
+                        + "system-label folders; deleted {} stale EmailFolder row(s)",
+                        updated, deleted);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to clear system-label folder mis-assignments", e);
+        }
     }
 
     private void normalizeDeprecatedProviders() {

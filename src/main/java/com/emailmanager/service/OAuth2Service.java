@@ -3,6 +3,7 @@ package com.emailmanager.service;
 import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.repository.EmailAccountRepository;
 import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse;
@@ -158,37 +159,37 @@ public class OAuth2Service {
     }
 
     /**
-     * Get valid credential for an email account, refreshing if necessary
+     * Get valid credential for an email account, refreshing if necessary.
+     * RuntimeExceptions from token checks / refresh are propagated directly so
+     * that callers do not produce duplicate error log entries.
      */
     public Credential getCredential(EmailAccount account) {
+        // If no tokens at all, the account needs to go through OAuth authorization.
+        // This throws directly (no catch) so the message is not re-wrapped.
+        if (account.getAccessToken() == null && account.getRefreshToken() == null) {
+            throw new RuntimeException(
+                    "Account not authorized: " + account.getEmailAddress() +
+                            ". Please complete the OAuth authorization flow.");
+        }
+
+        // Refresh if access token is missing or about to expire.
+        // refreshAccessToken() already logs the error and clears stale tokens;
+        // let its RuntimeException propagate without re-wrapping.
+        if (account.getAccessToken() == null ||
+                (account.getTokenExpiryDate() != null &&
+                        account.getTokenExpiryDate().isBefore(LocalDateTime.now().plusMinutes(5)))) {
+            refreshAccessToken(account);
+        }
+
         try {
-            // If no tokens at all, the account needs to go through OAuth authorization
-            if (account.getAccessToken() == null && account.getRefreshToken() == null) {
-                throw new RuntimeException(
-                        "Account not authorized: " + account.getEmailAddress() +
-                                ". Please complete the OAuth authorization flow.");
-            }
-
-            // Refresh if access token is missing (but refresh token exists) or token is
-            // about to expire
-            if (account.getAccessToken() == null ||
-                    (account.getTokenExpiryDate() != null &&
-                            account.getTokenExpiryDate().isBefore(LocalDateTime.now().plusMinutes(5)))) {
-                refreshAccessToken(account);
-            }
-
             GoogleAuthorizationCodeFlow flow = createFlow();
-
-            // Create credential with current tokens
-            Credential credential = flow.createAndStoreCredential(
+            return flow.createAndStoreCredential(
                     new GoogleTokenResponse()
                             .setAccessToken(account.getAccessToken())
                             .setRefreshToken(account.getRefreshToken()),
                     account.getEmailAddress());
-
-            return credential;
         } catch (Exception e) {
-            log.error("Failed to get credential for account: {}", account.getEmailAddress(), e);
+            log.error("Failed to build credential object for account: {}", account.getEmailAddress(), e);
             throw new RuntimeException("Failed to get credential", e);
         }
     }
@@ -197,14 +198,15 @@ public class OAuth2Service {
      * Refresh access token using refresh token
      */
     public void refreshAccessToken(EmailAccount account) {
-        try {
-            if (account.getRefreshToken() == null || account.getRefreshToken().isEmpty()) {
-                throw new RuntimeException("No refresh token available for account: " + account.getEmailAddress());
-            }
+        if (account.getRefreshToken() == null || account.getRefreshToken().isEmpty()) {
+            throw new RuntimeException("No refresh token available for account: " + account.getEmailAddress()
+                    + ". Please re-authorize the account.");
+        }
 
+        try {
             GoogleAuthorizationCodeFlow flow = createFlow();
 
-            // Load existing credential
+            // Build a credential with the stored tokens
             Credential credential = new Credential.Builder(
                     com.google.api.client.auth.oauth2.BearerToken.authorizationHeaderAccessMethod())
                     .setTransport(httpTransport)
@@ -215,12 +217,17 @@ public class OAuth2Service {
                     .setAccessToken(account.getAccessToken())
                     .setRefreshToken(account.getRefreshToken());
 
-            // Refresh the token
-            credential.refreshToken();
+            boolean refreshed = credential.refreshToken();
+            if (!refreshed || credential.getAccessToken() == null) {
+                // Refresh returned false — token is invalid; clear it so the account shows
+                // as needing re-authorization rather than retrying indefinitely.
+                clearTokens(account);
+                throw new RuntimeException("Token refresh failed for: " + account.getEmailAddress()
+                        + ". Please re-authorize the account via OAuth.");
+            }
 
             // Update account with new token
             account.setAccessToken(credential.getAccessToken());
-
             if (credential.getExpiresInSeconds() != null) {
                 account.setTokenExpiryDate(
                         LocalDateTime.now().plusSeconds(credential.getExpiresInSeconds()));
@@ -228,9 +235,38 @@ public class OAuth2Service {
 
             emailAccountRepository.save(account);
             log.info("Successfully refreshed access token for: {}", account.getEmailAddress());
+
+        } catch (TokenResponseException e) {
+            // Google returned an error (e.g. invalid_grant = token revoked or expired).
+            // Clear the stale tokens so the UI can prompt for re-authorization.
+            String errorCode = e.getDetails() != null ? e.getDetails().getError() : "unknown";
+            log.error("Token refresh rejected by Google for: {} (error={}). Account needs re-authorization.",
+                    account.getEmailAddress(), errorCode);
+            clearTokens(account);
+            throw new RuntimeException("Google rejected the refresh token for: " + account.getEmailAddress()
+                    + " (" + errorCode + "). Please re-authorize the account.", e);
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             log.error("Failed to refresh access token for: {}", account.getEmailAddress(), e);
-            throw new RuntimeException("Failed to refresh access token", e);
+            throw new RuntimeException("Failed to refresh access token for: " + account.getEmailAddress(), e);
+        }
+    }
+
+    /**
+     * Clear stored tokens and deactivate the account when they become invalid.
+     * Deactivating stops the sync scheduler from retrying until the user
+     * re-authorizes (which will set isActive back to true).
+     */
+    private void clearTokens(EmailAccount account) {
+        account.setAccessToken(null);
+        account.setRefreshToken(null);
+        account.setTokenExpiryDate(null);
+        account.setIsActive(false);
+        try {
+            emailAccountRepository.save(account);
+        } catch (Exception ex) {
+            log.warn("Could not persist token clear for account: {}", account.getEmailAddress(), ex);
         }
     }
 

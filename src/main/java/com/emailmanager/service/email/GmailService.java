@@ -25,6 +25,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import com.emailmanager.entity.EmailFolder;
+import com.emailmanager.repository.EmailFolderRepository;
 
 /**
  * Gmail API integration service
@@ -35,8 +37,10 @@ import java.util.Properties;
 public class GmailService implements EmailProviderService {
 
     private static final String APPLICATION_NAME = "Email Manager";
-    private static final int GMAIL_TIMEOUT_MS = 5000;
+    private static final int GMAIL_CONNECT_TIMEOUT_MS = 10_000;
+    private static final int GMAIL_READ_TIMEOUT_MS = 30_000;
     private final OAuth2Service oAuth2Service;
+    private final EmailFolderRepository emailFolderRepository;
 
     @Override
     public boolean authenticate(EmailAccount account) {
@@ -52,6 +56,12 @@ public class GmailService implements EmailProviderService {
         }
     }
 
+    // System label IDs to sync, in priority order (category tabs before INBOX so
+    // the folder assignment in resolveFolder sees the most-specific label first).
+    private static final List<String> LABELS_TO_SYNC = List.of(
+            "INBOX", "SENT", "DRAFT", "SPAM", "TRASH",
+            "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS");
+
     @Override
     public List<Email> fetchNewEmails(EmailAccount account, int limit) {
         List<Email> emails = new ArrayList<>();
@@ -64,36 +74,130 @@ public class GmailService implements EmailProviderService {
 
             Gmail service = getGmailService(account);
 
-            // List messages
-            com.google.api.services.gmail.Gmail.Users.Messages.List request = service.users().messages().list("me")
-                    .setQ("is:unread")
-                    .setMaxResults((long) limit);
+            // Fetch all label metadata once to resolve user-created label names
+            Map<String, String> labelMap = fetchLabelMap(service);
 
-            List<Message> messages = request.execute().getMessages();
+            // Per-sync folder cache
+            Map<String, EmailFolder> folderCache = new java.util.HashMap<>();
 
-            if (messages != null && !messages.isEmpty()) {
-                for (Message message : messages) {
-                    if (Thread.currentThread().isInterrupted()) {
-                        log.info("Stopping Gmail fetch loop for {} because the sync thread was interrupted",
-                                account.getEmailAddress());
+            // Time filter for incremental syncs (empty string on first sync = no filter)
+            String afterFilter = buildAfterFilter(account);
+
+            // Build time filter for incremental syncs (empty on first sync = fetch all)
+            // Use "after:" filter for incremental syncs; no query at all on initial sync
+            // so that EVERY message is returned regardless of label.
+            // includeSpamTrash=true ensures spam and trash are not silently excluded.
+            String query = afterFilter.isEmpty() ? null : afterFilter;
+            log.info("Gmail fetch: query='{}', afterFilter='{}'", query, afterFilter);
+            String pageToken = null;
+            int pageNum = 0;
+
+            do {
+                if (Thread.currentThread().isInterrupted())
+                    break;
+
+                com.google.api.services.gmail.Gmail.Users.Messages.List req = service.users().messages().list("me")
+                        .setIncludeSpamTrash(true)
+                        .setMaxResults(50L);
+                if (query != null)
+                    req.setQ(query);
+                if (pageToken != null)
+                    req.setPageToken(pageToken);
+
+                com.google.api.services.gmail.model.ListMessagesResponse response = req.execute();
+                List<Message> stubs = response.getMessages();
+                pageNum++;
+                log.info("Gmail list page {}: got {} stubs, nextPageToken={}, resultSizeEstimate={}",
+                        pageNum,
+                        stubs == null ? 0 : stubs.size(),
+                        response.getNextPageToken(),
+                        response.getResultSizeEstimate());
+
+                if (stubs == null || stubs.isEmpty())
+                    break;
+
+                for (Message stub : stubs) {
+                    if (Thread.currentThread().isInterrupted())
                         break;
+                    try {
+                        Message full = service.users().messages()
+                                .get("me", stub.getId())
+                                .setFormat("full")
+                                .execute();
+                        emails.add(convertGmailToEmail(full, account, service, labelMap, folderCache));
+                    } catch (Exception e) {
+                        log.warn("Skipping message {} — fetch failed: {}", stub.getId(), e.getMessage());
                     }
-
-                    Message fullMessage = service.users().messages()
-                            .get("me", message.getId())
-                            .setFormat("full")
-                            .execute();
-
-                    Email email = convertGmailToEmail(fullMessage, account, service);
-                    emails.add(email);
                 }
-            }
 
-            log.info("Fetched {} new emails from Gmail account: {}", emails.size(), account.getEmailAddress());
+                pageToken = response.getNextPageToken();
+            } while (pageToken != null && !Thread.currentThread().isInterrupted());
+
+            log.info("Fetched {} emails total from Gmail account: {}", emails.size(), account.getEmailAddress());
+            return emails; // normal completion — caller can mark initialSyncComplete
         } catch (Exception e) {
             log.error("Failed to fetch emails from Gmail account: {}", account.getEmailAddress(), e);
         }
-        return emails;
+        return null; // null signals abnormal termination — caller must NOT mark initialSyncComplete
+    }
+
+    /**
+     * Fetch ALL messages for a single Gmail label, paging through every page until
+     * exhausted. On incremental syncs the {@code afterFilter} bounds the results
+     * naturally, so pages are typically very short. On the initial full sync no
+     * filter is applied and all pages are walked.
+     *
+     * Message IDs already present in {@code seenIds} are skipped so that messages
+     * carrying multiple labels (e.g. INBOX + CATEGORY_PROMOTIONS) are only
+     * converted and added once.
+     */
+    private void fetchMessagesForLabel(Gmail service, EmailAccount account,
+            String labelId, String afterFilter,
+            java.util.Set<String> seenIds, List<Email> results,
+            Map<String, String> labelMap, Map<String, EmailFolder> folderCache) {
+        try {
+            String query = afterFilter.isEmpty() ? "-in:chats" : "-in:chats " + afterFilter;
+            String pageToken = null;
+            int fetched = 0;
+
+            do {
+                com.google.api.services.gmail.Gmail.Users.Messages.List req = service.users().messages().list("me")
+                        .setLabelIds(List.of(labelId))
+                        .setQ(query)
+                        .setMaxResults(50L); // Gmail API max page size
+                if (pageToken != null)
+                    req.setPageToken(pageToken);
+
+                com.google.api.services.gmail.model.ListMessagesResponse response = req.execute();
+                List<Message> stubs = response.getMessages();
+                if (stubs == null || stubs.isEmpty())
+                    break;
+
+                for (Message stub : stubs) {
+                    if (Thread.currentThread().isInterrupted())
+                        return;
+                    if (!seenIds.add(stub.getId()))
+                        continue; // deduplicate across labels
+
+                    Message full = service.users().messages()
+                            .get("me", stub.getId())
+                            .setFormat("full")
+                            .execute();
+
+                    results.add(convertGmailToEmail(full, account, service, labelMap, folderCache));
+                    fetched++;
+                }
+
+                pageToken = response.getNextPageToken();
+            } while (pageToken != null && !Thread.currentThread().isInterrupted());
+
+            if (fetched > 0) {
+                log.debug("Fetched {} messages for label {}", fetched, labelId);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to fetch messages for label {} ({}): {}", labelId,
+                    labelMap.getOrDefault(labelId, labelId), e.getMessage());
+        }
     }
 
     @Override
@@ -296,22 +400,23 @@ public class GmailService implements EmailProviderService {
     }
 
     private Gmail getGmailService(EmailAccount account) {
-        try {
-            // Get credential with automatic token refresh
-            Credential credential = oAuth2Service.getCredential(account);
+        // getCredential() already logs auth/token errors; let RuntimeException
+        // propagate directly so we don't emit duplicate ERROR log entries.
+        Credential credential = oAuth2Service.getCredential(account);
 
+        try {
             return new Gmail.Builder(
                     new NetHttpTransport(),
                     GsonFactory.getDefaultInstance(),
                     request -> {
                         credential.initialize(request);
-                        request.setConnectTimeout(GMAIL_TIMEOUT_MS);
-                        request.setReadTimeout(GMAIL_TIMEOUT_MS);
+                        request.setConnectTimeout(GMAIL_CONNECT_TIMEOUT_MS);
+                        request.setReadTimeout(GMAIL_READ_TIMEOUT_MS);
                     })
                     .setApplicationName(APPLICATION_NAME)
                     .build();
         } catch (Exception e) {
-            log.error("Failed to create Gmail service for account: {}", account.getEmailAddress(), e);
+            log.error("Failed to build Gmail service for account: {}", account.getEmailAddress(), e);
             throw new RuntimeException("Failed to create Gmail service. Please re-authenticate your account.", e);
         }
     }
@@ -337,7 +442,8 @@ public class GmailService implements EmailProviderService {
         applyCidAndImageFallback(email, cidImages, standaloneImages);
     }
 
-    private Email convertGmailToEmail(Message gmailMessage, EmailAccount account, Gmail gmailService) {
+    private Email convertGmailToEmail(Message gmailMessage, EmailAccount account, Gmail gmailService,
+            Map<String, String> labelMap, Map<String, EmailFolder> folderCache) {
         Email email = new Email();
         email.setAccount(account);
         email.setMessageId(gmailMessage.getId());
@@ -383,8 +489,12 @@ public class GmailService implements EmailProviderService {
             email.setReceivedDate(new java.sql.Timestamp(gmailMessage.getInternalDate()).toLocalDateTime());
         }
 
-        // Check if unread
-        email.setIsRead(!gmailMessage.getLabelIds().contains("UNREAD"));
+        // Map Gmail labels to category, folder, read/starred status
+        List<String> labelIds = gmailMessage.getLabelIds() != null ? gmailMessage.getLabelIds() : List.of();
+        email.setIsRead(!labelIds.contains("UNREAD"));
+        email.setIsStarred(labelIds.contains("STARRED"));
+        email.setCategory(mapLabelsToCategory(labelIds));
+        email.setFolder(resolveFolder(account, labelIds, labelMap, folderCache));
 
         return email;
     }
@@ -532,6 +642,120 @@ public class GmailService implements EmailProviderService {
             return from.substring(0, from.indexOf("<")).trim();
         }
         return from;
+    }
+
+    /**
+     * Returns a Gmail "after:" time filter string, or empty string on first sync.
+     */
+    private String buildAfterFilter(EmailAccount account) {
+        if (!Boolean.TRUE.equals(account.getInitialSyncComplete()) || account.getLastSyncTime() == null)
+            return "";
+        long epochSec = account.getLastSyncTime().toEpochSecond(java.time.ZoneOffset.UTC);
+        return "after:" + epochSec;
+    }
+
+    /** Fetch all label metadata and return a map of labelId → display name. */
+    private Map<String, String> fetchLabelMap(Gmail service) {
+        try {
+            var labels = service.users().labels().list("me").execute().getLabels();
+            if (labels == null)
+                return Map.of();
+            Map<String, String> map = new java.util.HashMap<>();
+            for (var label : labels) {
+                map.put(label.getId(), label.getName());
+            }
+            return map;
+        } catch (Exception e) {
+            log.warn("Could not fetch Gmail labels; user-label folders will use label ID as name", e);
+            return Map.of();
+        }
+    }
+
+    /**
+     * Map Gmail label IDs to the internal EmailCategory (highest-priority label
+     * wins).
+     */
+    private Email.EmailCategory mapLabelsToCategory(List<String> labelIds) {
+        if (labelIds.contains("TRASH"))
+            return Email.EmailCategory.TRASH;
+        if (labelIds.contains("SPAM"))
+            return Email.EmailCategory.SPAM;
+        if (labelIds.contains("DRAFT"))
+            return Email.EmailCategory.DRAFT;
+        if (labelIds.contains("SENT"))
+            return Email.EmailCategory.SENT;
+        if (labelIds.contains("CATEGORY_SOCIAL"))
+            return Email.EmailCategory.SOCIAL;
+        if (labelIds.contains("CATEGORY_PROMOTIONS"))
+            return Email.EmailCategory.PROMOTIONS;
+        if (labelIds.contains("CATEGORY_UPDATES"))
+            return Email.EmailCategory.UPDATES;
+        if (labelIds.contains("CATEGORY_FORUMS"))
+            return Email.EmailCategory.FORUMS;
+        if (labelIds.contains("IMPORTANT"))
+            return Email.EmailCategory.IMPORTANT;
+        return Email.EmailCategory.INBOX;
+    }
+
+    private static final Map<String, String> SYSTEM_LABEL_NAMES = Map.ofEntries(
+            Map.entry("INBOX", "Inbox"),
+            Map.entry("SENT", "Sent"),
+            Map.entry("TRASH", "Trash"),
+            Map.entry("SPAM", "Spam"),
+            Map.entry("DRAFT", "Drafts"),
+            Map.entry("IMPORTANT", "Important"),
+            Map.entry("STARRED", "Starred"),
+            Map.entry("CATEGORY_SOCIAL", "Social"),
+            Map.entry("CATEGORY_PROMOTIONS", "Promotions"),
+            Map.entry("CATEGORY_UPDATES", "Updates"),
+            Map.entry("CATEGORY_FORUMS", "Forums"));
+
+    // Labels that are metadata only and never map to a folder on their own.
+    private static final java.util.Set<String> NON_FOLDER_LABELS = java.util.Set.of(
+            "UNREAD", "STARRED", "IMPORTANT", "CHAT", "CATEGORY_PERSONAL");
+
+    /**
+     * Returns an EmailFolder only for user-created Gmail labels.
+     * Returns null for every built-in system label (INBOX, SENT, TRASH, SPAM,
+     * DRAFT, CATEGORY_PROMOTIONS, etc.).
+     *
+     * The app uses two separate routing mechanisms:
+     * - email.category (enum, folder=null) → queried by /category/{cat}
+     * - email.folder (FK, folder!=null) → queried by /folder/{id}
+     * Setting folder to a non-null value for system labels would break the
+     * category-based queries because the repository uses
+     * findByAccountAndCategoryAndFolderIsNull.
+     */
+    private EmailFolder resolveFolder(EmailAccount account, List<String> labelIds,
+            Map<String, String> labelMap, Map<String, EmailFolder> folderCache) {
+
+        for (String id : labelIds) {
+            // A label that isn't a known system label and isn't metadata-only is a
+            // user-created label — give it its own EmailFolder row.
+            if (!SYSTEM_LABEL_NAMES.containsKey(id) && !NON_FOLDER_LABELS.contains(id)) {
+                String name = labelMap.getOrDefault(id, id);
+                return findOrCreateFolder(account, name, false, folderCache);
+            }
+        }
+
+        // All labels are system labels — routing is done via email.category, no folder
+        // needed.
+        return null;
+    }
+
+    private EmailFolder findOrCreateFolder(EmailAccount account, String name, boolean isSystem,
+            Map<String, EmailFolder> folderCache) {
+        // The cache is keyed by folder name. computeIfAbsent ensures the DB is only
+        // queried (and the row only created) once per folder per sync run, even when
+        // hundreds of messages share the same label.
+        return folderCache.computeIfAbsent(name, n -> emailFolderRepository.findByAccountAndName(account, n)
+                .orElseGet(() -> {
+                    EmailFolder f = new EmailFolder();
+                    f.setAccount(account);
+                    f.setName(n);
+                    f.setIsSystemFolder(isSystem);
+                    return emailFolderRepository.save(f);
+                }));
     }
 
     private String buildReplyAllCc(String to, String originalTo, String originalCc, String accountEmailAddress) {
