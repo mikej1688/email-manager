@@ -88,7 +88,8 @@ public class GmailService implements EmailProviderService {
             // so that EVERY message is returned regardless of label.
             // includeSpamTrash=true ensures spam and trash are not silently excluded.
             String query = afterFilter.isEmpty() ? null : afterFilter;
-            log.info("Gmail fetch: query='{}', afterFilter='{}'", query, afterFilter);
+            boolean isInitialSync = afterFilter.isEmpty();
+            log.info("Gmail fetch: query='{}', afterFilter='{}', initialSync={}", query, afterFilter, isInitialSync);
             String pageToken = null;
             int pageNum = 0;
 
@@ -131,6 +132,16 @@ public class GmailService implements EmailProviderService {
                 }
 
                 pageToken = response.getNextPageToken();
+
+                if (isInitialSync) {
+                    // Lazy-load: only fetch the first page synchronously.
+                    // Persist the next page token so the background task can continue.
+                    account.setGmailBackgroundPageToken(pageToken);
+                    log.info("Initial sync: first page loaded ({} emails). " +
+                            "Remaining history will load in background (morePages={}).",
+                            emails.size(), pageToken != null);
+                    break;
+                }
             } while (pageToken != null && !Thread.currentThread().isInterrupted());
 
             log.info("Fetched {} emails total from Gmail account: {}", emails.size(), account.getEmailAddress());
@@ -139,6 +150,70 @@ public class GmailService implements EmailProviderService {
             log.error("Failed to fetch emails from Gmail account: {}", account.getEmailAddress(), e);
         }
         return null; // null signals abnormal termination — caller must NOT mark initialSyncComplete
+    }
+
+    /**
+     * Fetches the next page of historical Gmail emails using the page token stored
+     * on the account ({@code gmailBackgroundPageToken}). Called by the background
+     * loading task in {@code EmailSyncService} after the initial sync page.
+     *
+     * <p>
+     * On success the token on {@code account} is updated to the next page
+     * token (or cleared to {@code null} when the mailbox history is exhausted).
+     *
+     * @return the fetched emails, or {@code null} if a rate-limit or error
+     *         occurred (the token is left unchanged so the task can retry later)
+     */
+    public List<Email> fetchNextBackgroundPage(EmailAccount account) {
+        if (account.getGmailBackgroundPageToken() == null) {
+            return List.of(); // nothing left to load
+        }
+        List<Email> emails = new ArrayList<>();
+        try {
+            Gmail service = getGmailService(account);
+            Map<String, String> labelMap = fetchLabelMap(service);
+            Map<String, EmailFolder> folderCache = new java.util.HashMap<>();
+
+            com.google.api.services.gmail.Gmail.Users.Messages.List req = service.users().messages().list("me")
+                    .setIncludeSpamTrash(true)
+                    .setMaxResults(50L)
+                    .setPageToken(account.getGmailBackgroundPageToken());
+
+            com.google.api.services.gmail.model.ListMessagesResponse response = req.execute();
+            List<Message> stubs = response.getMessages();
+
+            if (stubs != null) {
+                for (Message stub : stubs) {
+                    if (Thread.currentThread().isInterrupted())
+                        break;
+                    try {
+                        Message full = service.users().messages()
+                                .get("me", stub.getId())
+                                .setFormat("full")
+                                .execute();
+                        emails.add(convertGmailToEmail(full, account, service, labelMap, folderCache));
+                    } catch (Exception e) {
+                        log.warn("Background sync: skipping message {} — {}", stub.getId(), e.getMessage());
+                    }
+                }
+            }
+
+            // Advance (or clear) the token ONLY on success
+            account.setGmailBackgroundPageToken(response.getNextPageToken());
+            log.info("Background sync page: {} emails fetched for {}, morePages={}",
+                    emails.size(), account.getEmailAddress(), response.getNextPageToken() != null);
+            return emails;
+        } catch (Exception e) {
+            // Detect rate-limit errors (HTTP 429 / Google quota errors)
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (msg.contains("429") || msg.contains("ratelimitexceeded") || msg.contains("rate limit")) {
+                log.warn("Gmail rate limit hit during background sync for {} — will retry next sync cycle",
+                        account.getEmailAddress());
+            } else {
+                log.error("Background sync page failed for {}: {}", account.getEmailAddress(), e.getMessage());
+            }
+            return null; // null = stop; token unchanged so it can be retried
+        }
     }
 
     /**

@@ -10,10 +10,14 @@ import com.emailmanager.service.email.ImapEmailService;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,6 +36,10 @@ public class EmailSyncService {
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
     private final EmailClassificationService classificationService;
+
+    @Autowired
+    @Qualifier("taskScheduler")
+    private TaskScheduler taskScheduler;
 
     @Value("${email.sync.fetch.limit:50}")
     private int fetchLimit;
@@ -131,6 +139,78 @@ public class EmailSyncService {
         emailAccountRepository.save(account);
 
         log.info("Synced {} new emails for account: {}", savedCount, account.getEmailAddress());
+
+        // If Gmail still has historical pages pending, schedule the background loader.
+        // This fires after the first-page initial sync AND after any sync cycle where
+        // the background task was previously interrupted by a rate limit.
+        if (account.getProvider() == EmailAccount.EmailProvider.GMAIL
+                && account.getGmailBackgroundPageToken() != null
+                && !shuttingDown.get()) {
+            final Long accountId = account.getId();
+            taskScheduler.schedule(() -> backgroundLoadRemainingPages(accountId), Instant.now());
+            log.info("Background Gmail history load scheduled for {}", account.getEmailAddress());
+        }
+    }
+
+    /**
+     * Loads the remaining pages of Gmail history in the background, one page at a
+     * time, using the page token stored on the account. Stops automatically when:
+     * <ul>
+     * <li>all pages are exhausted (token becomes null), or</li>
+     * <li>Gmail returns a rate-limit error (token is kept for the next retry),
+     * or</li>
+     * <li>the application is shutting down.</li>
+     * </ul>
+     * Each page's emails are saved individually so the UI can show them as they
+     * arrive (the frontend paginates from the local DB).
+     */
+    public void backgroundLoadRemainingPages(Long accountId) {
+        if (shuttingDown.get())
+            return;
+
+        EmailAccount account = emailAccountRepository.findById(accountId).orElse(null);
+        if (account == null || account.getGmailBackgroundPageToken() == null)
+            return;
+
+        log.info("Background Gmail history load started for {}", account.getEmailAddress());
+
+        while (account.getGmailBackgroundPageToken() != null
+                && !shuttingDown.get()
+                && !Thread.currentThread().isInterrupted()) {
+
+            List<Email> page = gmailService.fetchNextBackgroundPage(account);
+
+            if (page == null) {
+                // Rate-limited or transient error — persist the current token and stop.
+                // The next scheduled sync will re-submit this task to retry.
+                emailAccountRepository.save(account);
+                log.warn("Background Gmail history load paused for {} — will retry on next sync cycle",
+                        account.getEmailAddress());
+                return;
+            }
+
+            int saved = 0;
+            for (Email email : page) {
+                if (shuttingDown.get() || Thread.currentThread().isInterrupted())
+                    break;
+                if (emailRepository.findByMessageId(email.getMessageId()).isEmpty()) {
+                    classificationService.classifyEmail(email);
+                    emailRepository.save(email);
+                    saved++;
+                }
+            }
+
+            // Persist the updated page token (may now be null = exhausted)
+            emailAccountRepository.save(account);
+            log.info("Background Gmail history: saved {}/{} emails for {}, morePages={}",
+                    saved, page.size(), account.getEmailAddress(),
+                    account.getGmailBackgroundPageToken() != null);
+        }
+
+        if (account.getGmailBackgroundPageToken() == null) {
+            log.info("Background Gmail history load complete for {} — full mailbox loaded",
+                    account.getEmailAddress());
+        }
     }
 
     /**
@@ -152,9 +232,11 @@ public class EmailSyncService {
     @Transactional
     public void fullResyncAccount(EmailAccount account) {
         log.info("Starting full re-sync for account: {} (resetting sync state)", account.getEmailAddress());
-        // Reset the incremental-sync flags so fetchNewEmails sees no time filter.
+        // Reset all incremental-sync and background-load flags so fetchNewEmails
+        // starts from the beginning and background loading restarts from page 1.
         account.setInitialSyncComplete(false);
         account.setLastSyncTime(null);
+        account.setGmailBackgroundPageToken(null);
         emailAccountRepository.save(account);
 
         // Now run a normal sync — it will fetch ALL emails because initialSyncComplete

@@ -14,6 +14,7 @@ import com.emailmanager.service.email.RecipientListUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -176,7 +177,10 @@ public class EmailController {
     }
 
     /**
-     * Search emails for an account by keyword
+     * Search emails for an account by keyword.
+     * Encrypted columns cannot be searched with SQL LIKE, so emails are loaded
+     * for the account (already decrypted by the JPA converter) and filtered
+     * in-memory before pagination is applied.
      */
     @GetMapping("/account/{accountId}/search")
     public ResponseEntity<Page<Email>> searchEmails(
@@ -190,11 +194,35 @@ public class EmailController {
         }
         return emailAccountRepository.findById(accountId)
                 .map(account -> {
-                    Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.searchByAccount(account, q.trim(), pageable);
-                    return ResponseEntity.ok(emails);
+                    String keyword = q.trim().toLowerCase();
+                    List<Email> all = emailRepository
+                            .findByAccount(account, Pageable.unpaged()).getContent();
+                    List<Email> matched = all.stream()
+                            .filter(e -> emailMatchesKeyword(e, keyword))
+                            .sorted(java.util.Comparator
+                                    .comparing(Email::getReceivedDate,
+                                            java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
+                            .toList();
+                    int start = page * size;
+                    List<Email> pageContent = start >= matched.size()
+                            ? List.of()
+                            : matched.subList(start, Math.min(start + size, matched.size()));
+                    return ResponseEntity.ok(
+                            (Page<Email>) new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size()));
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    private boolean emailMatchesKeyword(Email e, String keyword) {
+        return containsIgnoreCase(e.getSubject(), keyword)
+                || containsIgnoreCase(e.getFromAddress(), keyword)
+                || containsIgnoreCase(e.getFromName(), keyword)
+                || containsIgnoreCase(e.getToAddresses(), keyword)
+                || containsIgnoreCase(e.getBodyPlainText(), keyword);
+    }
+
+    private boolean containsIgnoreCase(String field, String keyword) {
+        return field != null && field.toLowerCase().contains(keyword);
     }
 
     /**

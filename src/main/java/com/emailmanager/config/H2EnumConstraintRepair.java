@@ -30,6 +30,7 @@ public class H2EnumConstraintRepair {
 
         normalizeDeprecatedProviders();
         clearSystemLabelFolderMisassignment();
+        widenEncryptedEmailColumns();
 
         repairConstraint(
                 "EMAILS",
@@ -75,6 +76,26 @@ public class H2EnumConstraintRepair {
             }
         } catch (Exception e) {
             log.warn("Failed to clear system-label folder mis-assignments", e);
+        }
+    }
+
+    /**
+     * Encrypted column values are Base64-encoded ciphertext and can be
+     * significantly
+     * longer than the original VARCHAR limits. Widen the affected columns to CLOB
+     * on startup so that H2 can store them. This is a no-op if the columns are
+     * already large enough or if the table does not yet exist.
+     */
+    private void widenEncryptedEmailColumns() {
+        String[] columns = { "SUBJECT", "FROM_ADDRESS", "FROM_NAME", "TO_ADDRESSES", "BODY_PLAIN_TEXT", "BODY_HTML" };
+        for (String col : columns) {
+            try {
+                jdbcTemplate.execute("ALTER TABLE emails ALTER COLUMN " + col + " CLOB");
+                log.debug("Widened emails.{} to CLOB for encryption support", col);
+            } catch (Exception e) {
+                log.debug("Could not widen emails.{} (already correct type or table not present): {}", col,
+                        e.getMessage());
+            }
         }
     }
 

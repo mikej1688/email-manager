@@ -1,5 +1,6 @@
 package com.emailmanager.entity;
 
+import com.emailmanager.config.AttributeEncryptor;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -34,23 +35,30 @@ public class Email {
     @Column(nullable = false, unique = true)
     private String messageId; // Unique ID from email provider
 
-    @Column(nullable = false)
+    @Convert(converter = AttributeEncryptor.class)
+    @Column(nullable = false, columnDefinition = "TEXT")
     private String subject;
 
-    @Column(nullable = false)
+    @Convert(converter = AttributeEncryptor.class)
+    @Column(nullable = false, columnDefinition = "TEXT")
     private String fromAddress;
 
+    @Convert(converter = AttributeEncryptor.class)
+    @Column(columnDefinition = "TEXT")
     private String fromName;
 
-    @Column(length = 2000)
+    @Convert(converter = AttributeEncryptor.class)
+    @Column(columnDefinition = "TEXT")
     private String toAddresses;
 
     @Column(length = 2000)
     private String ccAddresses;
 
+    @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "TEXT")
     private String bodyPlainText;
 
+    @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "TEXT")
     private String bodyHtml;
 

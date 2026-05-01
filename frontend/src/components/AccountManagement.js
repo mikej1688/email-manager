@@ -244,7 +244,7 @@ function AccountManagement({ onAccountsChange }) {
               }
             }}
           >
-            {showForm ? 'Cancel' : '+ Add Other Account'}
+            {showForm ? 'Cancel' : '+ Add Account'}
           </button>
         </div>
 

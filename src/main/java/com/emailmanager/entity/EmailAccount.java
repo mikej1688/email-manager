@@ -62,6 +62,14 @@ public class EmailAccount {
     @Column(nullable = false)
     private Boolean initialSyncComplete = false;
 
+    /**
+     * Stores the Gmail API page token for the background pagination task.
+     * Non-null means there are still historical Gmail pages yet to be fetched.
+     * Cleared (set to null) once the full mailbox history has been loaded.
+     */
+    @Column(length = 500)
+    private String gmailBackgroundPageToken;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
