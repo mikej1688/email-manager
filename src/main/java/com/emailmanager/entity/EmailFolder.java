@@ -36,6 +36,11 @@ public class EmailFolder {
 
     private String folderPath; // For hierarchical folders
 
+    // Gmail label ID for folders created from user-created Gmail labels.
+    // Null for non-Gmail folders and system-label-only emails.
+    @Column(length = 255)
+    private String gmailLabelId;
+
     private Integer displayOrder;
 
     private LocalDateTime createdAt;

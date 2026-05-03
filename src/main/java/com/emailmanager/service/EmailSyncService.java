@@ -100,6 +100,12 @@ public class EmailSyncService {
 
         EmailProviderService providerService = getProviderService(account);
 
+        // Proactively create EmailFolder rows for every user-created Gmail label so
+        // folders appear in the sidebar even before an email with that label is synced.
+        if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
+            gmailService.syncGmailLabelsAsFolders(account);
+        }
+
         // Fetch new emails — returns null if the fetch failed fatally (e.g. network
         // error on the list call itself), so we must NOT mark the sync complete.
         List<Email> newEmails = providerService.fetchNewEmails(account, fetchLimit);
@@ -118,11 +124,11 @@ public class EmailSyncService {
             }
             // Check if email already exists
             if (emailRepository.findByMessageId(email.getMessageId()).isEmpty()) {
-                // Classify the email
+                // Persist first so the email has a DB ID before classification
+                // creates any Notification rows that reference it.
+                email = emailRepository.save(email);
                 classificationService.classifyEmail(email);
-
-                // Save the email
-                emailRepository.save(email);
+                emailRepository.save(email); // persist classification updates
                 savedCount++;
 
                 log.debug("Saved new email: {} from {}", email.getSubject(), email.getFromAddress());
@@ -194,6 +200,7 @@ public class EmailSyncService {
                 if (shuttingDown.get() || Thread.currentThread().isInterrupted())
                     break;
                 if (emailRepository.findByMessageId(email.getMessageId()).isEmpty()) {
+                    email = emailRepository.save(email);
                     classificationService.classifyEmail(email);
                     emailRepository.save(email);
                     saved++;

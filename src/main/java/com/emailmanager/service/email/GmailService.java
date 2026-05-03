@@ -570,6 +570,14 @@ public class GmailService implements EmailProviderService {
         email.setIsStarred(labelIds.contains("STARRED"));
         email.setCategory(mapLabelsToCategory(labelIds));
         email.setFolder(resolveFolder(account, labelIds, labelMap, folderCache));
+        // Store all label IDs comma-padded so label-membership queries can use LIKE '%,ID,%'
+        if (!labelIds.isEmpty()) {
+            email.setGmailLabelIds("," + String.join(",", labelIds) + ",");
+        }
+
+        // Guard NOT NULL columns against messages with missing headers (automated/system mail)
+        if (email.getSubject() == null) email.setSubject("(no subject)");
+        if (email.getFromAddress() == null) email.setFromAddress("");
 
         return email;
     }
@@ -729,6 +737,52 @@ public class GmailService implements EmailProviderService {
         return "after:" + epochSec;
     }
 
+    /**
+     * Eagerly creates an {@link EmailFolder} row for every user-created Gmail label
+     * that doesn't already have one. System labels (INBOX, SENT, TRASH, etc.) are
+     * intentionally skipped — they are handled via {@code Email.category}.
+     *
+     * <p>Also back-fills {@code gmailLabelId} on existing folders that were created
+     * before this field existed (matched by display name).
+     */
+    public void syncGmailLabelsAsFolders(EmailAccount account) {
+        try {
+            Gmail service = getGmailService(account);
+            var labels = service.users().labels().list("me").execute().getLabels();
+            if (labels == null) return;
+
+            for (var label : labels) {
+                String id = label.getId();
+                // Skip system labels — routed via EmailCategory, not EmailFolder
+                if (SYSTEM_LABEL_NAMES.containsKey(id) || NON_FOLDER_LABELS.contains(id))
+                    continue;
+
+                String name = label.getName() != null ? label.getName() : id;
+
+                // Find by label ID first, fall back to name (for rows created before gmailLabelId existed)
+                EmailFolder folder = emailFolderRepository
+                        .findByAccountAndGmailLabelId(account, id)
+                        .orElseGet(() -> emailFolderRepository.findByAccountAndName(account, name)
+                                .orElse(null));
+
+                if (folder == null) {
+                    folder = new EmailFolder();
+                    folder.setAccount(account);
+                    folder.setName(name);
+                    folder.setIsSystemFolder(false);
+                }
+                // Back-fill gmailLabelId if missing
+                if (folder.getGmailLabelId() == null) {
+                    folder.setGmailLabelId(id);
+                    emailFolderRepository.save(folder);
+                }
+            }
+            log.info("Gmail label-to-folder sync complete for {}", account.getEmailAddress());
+        } catch (Exception e) {
+            log.warn("Failed to sync Gmail labels as folders for {}: {}", account.getEmailAddress(), e.getMessage());
+        }
+    }
+
     /** Fetch all label metadata and return a map of labelId → display name. */
     private Map<String, String> fetchLabelMap(Gmail service) {
         try {
@@ -809,7 +863,7 @@ public class GmailService implements EmailProviderService {
             // user-created label — give it its own EmailFolder row.
             if (!SYSTEM_LABEL_NAMES.containsKey(id) && !NON_FOLDER_LABELS.contains(id)) {
                 String name = labelMap.getOrDefault(id, id);
-                return findOrCreateFolder(account, name, false, folderCache);
+                return findOrCreateFolder(account, name, id, false, folderCache);
             }
         }
 
@@ -818,7 +872,7 @@ public class GmailService implements EmailProviderService {
         return null;
     }
 
-    private EmailFolder findOrCreateFolder(EmailAccount account, String name, boolean isSystem,
+    private EmailFolder findOrCreateFolder(EmailAccount account, String name, String gmailLabelId, boolean isSystem,
             Map<String, EmailFolder> folderCache) {
         // The cache is keyed by folder name. computeIfAbsent ensures the DB is only
         // queried (and the row only created) once per folder per sync run, even when
@@ -828,6 +882,7 @@ public class GmailService implements EmailProviderService {
                     EmailFolder f = new EmailFolder();
                     f.setAccount(account);
                     f.setName(n);
+                    f.setGmailLabelId(gmailLabelId);
                     f.setIsSystemFolder(isSystem);
                     return emailFolderRepository.save(f);
                 }));

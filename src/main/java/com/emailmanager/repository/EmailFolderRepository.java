@@ -14,5 +14,7 @@ public interface EmailFolderRepository extends JpaRepository<EmailFolder, Long> 
 
     Optional<EmailFolder> findByAccountAndName(EmailAccount account, String name);
 
+    Optional<EmailFolder> findByAccountAndGmailLabelId(EmailAccount account, String gmailLabelId);
+
     List<EmailFolder> findByAccountOrderByDisplayOrder(EmailAccount account);
 }

@@ -57,4 +57,14 @@ public interface EmailRepository extends JpaRepository<Email, Long> {
                         ") ORDER BY e.receivedDate DESC")
         Page<Email> searchByAccount(@Param("account") EmailAccount account, @Param("query") String query,
                         Pageable pageable);
+
+        // Query by raw Gmail label ID. gmailLabelIds is stored comma-padded (",INBOX,CATEGORY_PROMOTIONS,")
+        // so searching CONCAT('%,', :labelId, ',%') prevents partial ID matches.
+        @Query("SELECT e FROM Email e WHERE e.account = :account AND e.gmailLabelIds LIKE CONCAT('%,', :labelId, ',%')")
+        Page<Email> findByAccountAndGmailLabel(@Param("account") EmailAccount account,
+                        @Param("labelId") String labelId, Pageable pageable);
+
+        @Query("SELECT COUNT(e) FROM Email e WHERE e.account = :account AND e.gmailLabelIds LIKE CONCAT('%,', :labelId, ',%')")
+        Long countByAccountAndGmailLabel(@Param("account") EmailAccount account,
+                        @Param("labelId") String labelId);
 }

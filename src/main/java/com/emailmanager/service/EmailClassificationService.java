@@ -25,17 +25,23 @@ public class EmailClassificationService {
     public void classifyEmail(Email email) {
         log.debug("Classifying email: {}", email.getSubject());
 
-        // 1. Check for spam/phishing first
-        spamDetectionService.detectSpamAndPhishing(email);
+        // Gmail emails already carry authoritative label data (SPAM, INBOX, etc.) set
+        // by Google's own filter. Running a local heuristic on top produces too many
+        // false positives and overrides the correct Gmail category, so we skip it.
+        // For non-Gmail (IMAP) accounts there is no server-side classification, so
+        // local spam/phishing detection is still applied there.
+        boolean isGmailEmail = email.getGmailLabelIds() != null;
 
-        if (email.getIsSpam() || email.getIsPhishing()) {
-            log.info("Email classified as spam/phishing: {}", email.getSubject());
+        if (!isGmailEmail) {
+            spamDetectionService.detectSpamAndPhishing(email);
 
-            // Send notification if phishing detected
-            if (email.getIsPhishing()) {
-                notificationService.sendPhishingAlert(email);
+            if (email.getIsSpam() || email.getIsPhishing()) {
+                log.info("Email classified as spam/phishing: {}", email.getSubject());
+                if (email.getIsPhishing()) {
+                    notificationService.sendPhishingAlert(email);
+                }
+                return;
             }
-            return;
         }
 
         // 2. Apply rule-based classification

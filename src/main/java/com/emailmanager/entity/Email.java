@@ -51,7 +51,7 @@ public class Email {
     @Column(columnDefinition = "TEXT")
     private String toAddresses;
 
-    @Column(length = 2000)
+    @Column(columnDefinition = "TEXT")
     private String ccAddresses;
 
     @Convert(converter = AttributeEncryptor.class)
@@ -105,6 +105,11 @@ public class Email {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "folder_id")
     private EmailFolder folder;
+
+    // Comma-padded list of raw Gmail label IDs, e.g. ",INBOX,CATEGORY_PROMOTIONS,UNREAD,"
+    // Used to query emails by label for accurate Gmail-side counts.
+    @Column(columnDefinition = "TEXT")
+    private String gmailLabelIds;
 
     private LocalDateTime processedAt;
     private LocalDateTime createdAt;

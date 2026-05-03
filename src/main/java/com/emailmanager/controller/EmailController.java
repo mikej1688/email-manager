@@ -140,7 +140,10 @@ public class EmailController {
                         .map(folder -> {
                             Pageable pageable = PageRequest.of(page, size,
                                     Sort.by(Sort.Direction.DESC, "receivedDate"));
-                            Page<Email> emails = emailRepository.findByAccountAndFolder(account, folder, pageable);
+                            Page<Email> emails = folder.getGmailLabelId() != null
+                                    ? emailRepository.findByAccountAndGmailLabel(account, folder.getGmailLabelId(),
+                                            pageable)
+                                    : emailRepository.findByAccountAndFolder(account, folder, pageable);
                             return ResponseEntity.ok(emails);
                         })
                         .orElse(ResponseEntity.notFound().build()))

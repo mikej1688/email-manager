@@ -31,6 +31,7 @@ public class H2EnumConstraintRepair {
         normalizeDeprecatedProviders();
         clearSystemLabelFolderMisassignment();
         widenEncryptedEmailColumns();
+        restoreGmailInboxEmailsMisclassifiedAsSpam();
 
         repairConstraint(
                 "EMAILS",
@@ -87,7 +88,7 @@ public class H2EnumConstraintRepair {
      * already large enough or if the table does not yet exist.
      */
     private void widenEncryptedEmailColumns() {
-        String[] columns = { "SUBJECT", "FROM_ADDRESS", "FROM_NAME", "TO_ADDRESSES", "BODY_PLAIN_TEXT", "BODY_HTML" };
+        String[] columns = { "SUBJECT", "FROM_ADDRESS", "FROM_NAME", "TO_ADDRESSES", "CC_ADDRESSES", "BODY_PLAIN_TEXT", "BODY_HTML" };
         for (String col : columns) {
             try {
                 jdbcTemplate.execute("ALTER TABLE emails ALTER COLUMN " + col + " CLOB");
@@ -96,6 +97,44 @@ public class H2EnumConstraintRepair {
                 log.debug("Could not widen emails.{} (already correct type or table not present): {}", col,
                         e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Gmail emails whose category was overridden to SPAM by the app's local heuristic
+     * detector should be restored to the category that Gmail's own labels indicate.
+     * We identify them by the gmailLabelIds column: if it does NOT contain ",SPAM,"
+     * (i.e. Gmail never marked them as spam) but the stored category is SPAM or
+     * isSpam=true, we reset them.
+     *
+     * Mapping rules mirror GmailService.mapLabelsToCategory:
+     *   TRASH → TRASH, DRAFT → DRAFT, SENT → SENT,
+     *   CATEGORY_* tabs → their enum value, everything else → INBOX.
+     */
+    private void restoreGmailInboxEmailsMisclassifiedAsSpam() {
+        try {
+            // Emails that Gmail never flagged as spam but the app did
+            int restored = jdbcTemplate.update(
+                    "UPDATE emails SET category = CASE "
+                    + "  WHEN gmail_label_ids LIKE '%,TRASH,%'              THEN 'TRASH' "
+                    + "  WHEN gmail_label_ids LIKE '%,DRAFT,%'              THEN 'DRAFT' "
+                    + "  WHEN gmail_label_ids LIKE '%,SENT,%'               THEN 'SENT' "
+                    + "  WHEN gmail_label_ids LIKE '%,CATEGORY_SOCIAL,%'    THEN 'SOCIAL' "
+                    + "  WHEN gmail_label_ids LIKE '%,CATEGORY_PROMOTIONS,%' THEN 'PROMOTIONS' "
+                    + "  WHEN gmail_label_ids LIKE '%,CATEGORY_UPDATES,%'   THEN 'UPDATES' "
+                    + "  WHEN gmail_label_ids LIKE '%,CATEGORY_FORUMS,%'    THEN 'FORUMS' "
+                    + "  ELSE 'INBOX' "
+                    + "END, "
+                    + "is_spam = FALSE, is_phishing = FALSE, spam_score = NULL, phishing_score = NULL "
+                    + "WHERE gmail_label_ids IS NOT NULL "
+                    + "  AND gmail_label_ids NOT LIKE '%,SPAM,%' "
+                    + "  AND (category = 'SPAM' OR is_spam = TRUE OR is_phishing = TRUE)");
+            if (restored > 0) {
+                log.info("Startup repair: restored {} Gmail email(s) incorrectly classified as spam back to their Gmail category",
+                        restored);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to restore Gmail emails mis-classified as spam", e);
         }
     }
 
