@@ -55,11 +55,11 @@ public class Email {
     private String ccAddresses;
 
     @Convert(converter = AttributeEncryptor.class)
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     private String bodyPlainText;
 
     @Convert(converter = AttributeEncryptor.class)
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     private String bodyHtml;
 
     private LocalDateTime receivedDate;
@@ -114,6 +114,23 @@ public class Email {
     private LocalDateTime processedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // Truncation limits prevent MySQL max_allowed_packet errors from huge HTML newsletters.
+    // 500 KB plain / 1 MB HTML keeps the encrypted+Base64 INSERT packet well under 4 MB.
+    private static final int MAX_PLAIN_TEXT_LENGTH = 500_000;
+    private static final int MAX_HTML_LENGTH = 1_000_000;
+
+    public void setBodyPlainText(String bodyPlainText) {
+        this.bodyPlainText = bodyPlainText != null && bodyPlainText.length() > MAX_PLAIN_TEXT_LENGTH
+                ? bodyPlainText.substring(0, MAX_PLAIN_TEXT_LENGTH)
+                : bodyPlainText;
+    }
+
+    public void setBodyHtml(String bodyHtml) {
+        this.bodyHtml = bodyHtml != null && bodyHtml.length() > MAX_HTML_LENGTH
+                ? bodyHtml.substring(0, MAX_HTML_LENGTH)
+                : bodyHtml;
+    }
 
     @PrePersist
     protected void onCreate() {
