@@ -24,14 +24,17 @@ public class H2EnumConstraintRepair {
 
     @EventListener(ApplicationReadyEvent.class)
     public void repairStaleEnumConstraints() {
+        // Data-level repairs use standard SQL and run on every database.
+        normalizeDeprecatedProviders();
+        clearSystemLabelFolderMisassignment();
+        restoreGmailInboxEmailsMisclassifiedAsSpam();
+
+        // Structural repairs below are H2-specific — skip on MySQL/PostgreSQL.
         if (!isH2Database()) {
             return;
         }
 
-        normalizeDeprecatedProviders();
-        clearSystemLabelFolderMisassignment();
         widenEncryptedEmailColumns();
-        restoreGmailInboxEmailsMisclassifiedAsSpam();
 
         repairConstraint(
                 "EMAILS",
