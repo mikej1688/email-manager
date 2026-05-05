@@ -7,6 +7,7 @@ import com.emailmanager.repository.EmailRepository;
 import com.emailmanager.service.email.EmailProviderService;
 import com.emailmanager.service.email.GmailService;
 import com.emailmanager.service.email.ImapEmailService;
+import com.emailmanager.service.AuditLogService;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +37,7 @@ public class EmailSyncService {
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
     private final EmailClassificationService classificationService;
+    private final AuditLogService auditLogService;
 
     @Autowired
     @Qualifier("taskScheduler")
@@ -145,6 +147,7 @@ public class EmailSyncService {
         emailAccountRepository.save(account);
 
         log.info("Synced {} new emails for account: {}", savedCount, account.getEmailAddress());
+        auditLogService.logSync(account.getId(), account.getEmailAddress(), savedCount);
 
         // If Gmail still has historical pages pending, schedule the background loader.
         // This fires after the first-page initial sync AND after any sync cycle where
@@ -239,6 +242,7 @@ public class EmailSyncService {
     @Transactional
     public void fullResyncAccount(EmailAccount account) {
         log.info("Starting full re-sync for account: {} (resetting sync state)", account.getEmailAddress());
+        auditLogService.logFullResync(account.getId(), account.getEmailAddress());
         // Reset all incremental-sync and background-load flags so fetchNewEmails
         // starts from the beginning and background loading restarts from page 1.
         account.setInitialSyncComplete(false);

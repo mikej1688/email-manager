@@ -5,6 +5,8 @@ import Dashboard from './components/Dashboard';
 import EmailList from './components/EmailList';
 import AccountManagement from './components/AccountManagement';
 import Notifications from './components/Notifications';
+import PrivacyPolicy from './components/PrivacyPolicy';
+import Footer from './components/Footer';
 
 function App() {
   const [accounts, setAccounts] = useState([]);
@@ -60,8 +62,10 @@ function App() {
             <Route path="/emails" element={<EmailList accounts={accounts} />} />
             <Route path="/accounts" element={<AccountManagement onAccountsChange={fetchAccounts} />} />
             <Route path="/notifications" element={<Notifications notifications={notifications} onRefresh={fetchNotifications} />} />
+            <Route path="/privacy" element={<PrivacyPolicy />} />
           </Routes>
         </main>
+        <Footer />
       </div>
     </Router>
   );

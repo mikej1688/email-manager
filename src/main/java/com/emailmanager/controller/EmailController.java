@@ -7,6 +7,7 @@ import com.emailmanager.repository.EmailAccountRepository;
 import com.emailmanager.repository.EmailFolderRepository;
 import com.emailmanager.repository.EmailRepository;
 import com.emailmanager.repository.NotificationRepository;
+import com.emailmanager.service.AuditLogService;
 import com.emailmanager.service.RecipientAddressService;
 import com.emailmanager.service.email.GmailService;
 import com.emailmanager.service.email.ImapEmailService;
@@ -21,6 +22,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -47,6 +50,7 @@ public class EmailController {
     private final RecipientAddressService recipientAddressService;
     private final GmailService gmailService;
     private final ImapEmailService imapEmailService;
+    private final AuditLogService auditLogService;
 
     /**
      * Get all emails with pagination
@@ -173,9 +177,12 @@ public class EmailController {
      * Get email by ID
      */
     @GetMapping("/{id}")
-    public ResponseEntity<Email> getEmailById(@PathVariable Long id) {
+    public ResponseEntity<Email> getEmailById(@PathVariable Long id, HttpServletRequest request) {
         return emailRepository.findById(id)
-                .map(ResponseEntity::ok)
+                .map(email -> {
+                    auditLogService.logEmailRead(id, email.getAccount().getId(), resolveClientIp(request));
+                    return ResponseEntity.ok(email);
+                })
                 .orElse(ResponseEntity.notFound().build());
     }
 
@@ -190,7 +197,8 @@ public class EmailController {
             @PathVariable Long accountId,
             @RequestParam String q,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            HttpServletRequest request) {
 
         if (q == null || q.trim().isEmpty()) {
             return ResponseEntity.badRequest().build();
@@ -206,6 +214,7 @@ public class EmailController {
                                     .comparing(Email::getReceivedDate,
                                             java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
                             .toList();
+                    auditLogService.logEmailSearch(accountId, keyword.length(), resolveClientIp(request), matched.size());
                     int start = page * size;
                     List<Email> pageContent = start >= matched.size()
                             ? List.of()
@@ -214,6 +223,14 @@ public class EmailController {
                             (Page<Email>) new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size()));
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    private String resolveClientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     private boolean emailMatchesKeyword(Email e, String keyword) {
@@ -313,9 +330,10 @@ public class EmailController {
      */
     @DeleteMapping("/{id}")
     @Transactional
-    public ResponseEntity<Void> deleteEmail(@PathVariable Long id) {
+    public ResponseEntity<Void> deleteEmail(@PathVariable Long id, HttpServletRequest request) {
         return emailRepository.findById(id)
                 .map(email -> {
+                    auditLogService.logEmailDelete(id, email.getAccount().getId(), resolveClientIp(request));
                     // Delete on remote provider
                     try {
                         EmailAccount account = emailAccountRepository
@@ -598,7 +616,8 @@ public class EmailController {
      * Send a new email (compose)
      */
     @PostMapping("/send")
-    public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request) {
+    public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request,
+            HttpServletRequest httpRequest) {
         Long accountId = Long.parseLong(request.get("accountId"));
         String to = request.get("to");
         String cc = request.getOrDefault("cc", "");
@@ -643,6 +662,7 @@ public class EmailController {
 
                         recipientAddressService.recordRecipients(to, cc);
                         deleteDraftIfPresent(draftIdValue);
+                        auditLogService.logEmailSend(sent.getId(), accountId, resolveClientIp(httpRequest));
 
                         result.put("status", "sent");
                         result.put("message", "Email sent successfully");
@@ -661,7 +681,7 @@ public class EmailController {
      */
     @PostMapping("/{id}/reply")
     public ResponseEntity<Map<String, String>> replyToEmail(@PathVariable Long id,
-            @RequestBody Map<String, String> request) {
+            @RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
         return emailRepository.findById(id)
                 .<ResponseEntity<Map<String, String>>>map(email -> {
                     String to = request.getOrDefault("to", email.getFromAddress());
@@ -719,6 +739,7 @@ public class EmailController {
 
                         recipientAddressService.recordRecipients(replyTo, cc);
                         deleteDraftIfPresent(draftIdValue);
+                        auditLogService.logEmailReply(id, account.getId(), resolveClientIp(httpRequest));
 
                         result.put("status", "sent");
                         result.put("message", "Reply sent successfully");
@@ -737,7 +758,7 @@ public class EmailController {
      */
     @PostMapping("/{id}/forward")
     public ResponseEntity<Map<String, String>> forwardEmail(@PathVariable Long id,
-            @RequestBody Map<String, String> request) {
+            @RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
         return emailRepository.findById(id)
                 .<ResponseEntity<Map<String, String>>>map(email -> {
                     String to = request.get("to");
@@ -790,6 +811,7 @@ public class EmailController {
 
                         recipientAddressService.recordRecipients(to);
                         deleteDraftIfPresent(draftIdValue);
+                        auditLogService.logEmailForward(id, account.getId(), resolveClientIp(httpRequest));
 
                         result.put("status", "sent");
                         result.put("message", "Email forwarded successfully");
