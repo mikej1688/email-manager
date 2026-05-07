@@ -1,8 +1,10 @@
 package com.emailmanager.controller;
 
+import com.emailmanager.config.EmailViews;
 import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.entity.EmailFolder;
+import com.emailmanager.entity.User;
 import com.emailmanager.repository.EmailAccountRepository;
 import com.emailmanager.repository.EmailFolderRepository;
 import com.emailmanager.repository.EmailRepository;
@@ -20,6 +22,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.json.MappingJacksonValue;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -53,10 +57,12 @@ public class EmailController {
     private final AuditLogService auditLogService;
 
     /**
-     * Get all emails with pagination
+     * Get all emails with pagination, scoped to the authenticated user's accounts.
+     * ADMIN and DEVELOPER see all accounts; USER sees only their own.
      */
     @GetMapping
-    public ResponseEntity<Page<Email>> getAllEmails(
+    public ResponseEntity<?> getAllEmails(
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "receivedDate") String sortBy,
@@ -65,80 +71,71 @@ public class EmailController {
         Sort.Direction sortDirection = direction.equalsIgnoreCase("ASC") ? Sort.Direction.ASC : Sort.Direction.DESC;
         Pageable pageable = PageRequest.of(page, size, Sort.by(sortDirection, sortBy));
 
-        Page<Email> emails = emailRepository.findAll(pageable);
-        return ResponseEntity.ok(emails);
+        Page<Email> emails = user.getRole() == User.Role.USER
+                ? emailRepository.findByAccountIn(emailAccountRepository.findByOwner(user), pageable)
+                : emailRepository.findAll(pageable);
+        return asEmailView(user, emails);
     }
 
-    /**
-     * Get emails by account
-     */
     @GetMapping("/account/{accountId}")
-    public ResponseEntity<Page<Email>> getEmailsByAccount(
+    public ResponseEntity<?> getEmailsByAccount(
             @PathVariable Long accountId,
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccount(account, pageable);
-                    return ResponseEntity.ok(emails);
+                    return asEmailView(user, emailRepository.findByAccount(account, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get unread emails by account
-     */
     @GetMapping("/account/{accountId}/unread")
-    public ResponseEntity<Page<Email>> getUnreadEmails(
+    public ResponseEntity<?> getUnreadEmails(
             @PathVariable Long accountId,
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndIsReadAndCategoryNotIn(
+                    return asEmailView(user, emailRepository.findByAccountAndIsReadAndCategoryNotIn(
                             account, false,
                             List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT, Email.EmailCategory.DRAFT),
-                            pageable);
-                    return ResponseEntity.ok(emails);
+                            pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get emails by category
-     */
     @GetMapping("/account/{accountId}/category/{category}")
-    public ResponseEntity<Page<Email>> getEmailsByCategory(
+    public ResponseEntity<?> getEmailsByCategory(
             @PathVariable Long accountId,
             @PathVariable Email.EmailCategory category,
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndCategoryAndFolderIsNull(account, category,
-                            pageable);
-                    return ResponseEntity.ok(emails);
+                    return asEmailView(user,
+                            emailRepository.findByAccountAndCategoryAndFolderIsNull(account, category, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get emails by custom folder.
-     */
     @GetMapping("/account/{accountId}/folder/{folderId}")
-    public ResponseEntity<Page<Email>> getEmailsByFolder(
+    public ResponseEntity<?> getEmailsByFolder(
             @PathVariable Long accountId,
             @PathVariable Long folderId,
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> emailFolderRepository.findById(folderId)
                         .filter(folder -> folder.getAccount().getId().equals(account.getId()))
                         .map(folder -> {
@@ -148,40 +145,39 @@ public class EmailController {
                                     ? emailRepository.findByAccountAndGmailLabel(account, folder.getGmailLabelId(),
                                             pageable)
                                     : emailRepository.findByAccountAndFolder(account, folder, pageable);
-                            return ResponseEntity.ok(emails);
+                            return asEmailView(user, emails);
                         })
                         .orElse(ResponseEntity.notFound().build()))
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get emails by importance
-     */
     @GetMapping("/account/{accountId}/importance/{importance}")
-    public ResponseEntity<Page<Email>> getEmailsByImportance(
+    public ResponseEntity<?> getEmailsByImportance(
             @PathVariable Long accountId,
             @PathVariable Email.ImportanceLevel importance,
+            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    Page<Email> emails = emailRepository.findByAccountAndImportance(account, importance, pageable);
-                    return ResponseEntity.ok(emails);
+                    return asEmailView(user,
+                            emailRepository.findByAccountAndImportance(account, importance, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get email by ID
-     */
     @GetMapping("/{id}")
-    public ResponseEntity<Email> getEmailById(@PathVariable Long id, HttpServletRequest request) {
+    public ResponseEntity<?> getEmailById(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
         return emailRepository.findById(id)
+                .filter(email -> canAccessAccount(user, email.getAccount()))
                 .map(email -> {
                     auditLogService.logEmailRead(id, email.getAccount().getId(), resolveClientIp(request));
-                    return ResponseEntity.ok(email);
+                    return asEmailView(user, email);
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -193,8 +189,9 @@ public class EmailController {
      * in-memory before pagination is applied.
      */
     @GetMapping("/account/{accountId}/search")
-    public ResponseEntity<Page<Email>> searchEmails(
+    public ResponseEntity<?> searchEmails(
             @PathVariable Long accountId,
+            @AuthenticationPrincipal User user,
             @RequestParam String q,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -203,7 +200,7 @@ public class EmailController {
         if (q == null || q.trim().isEmpty()) {
             return ResponseEntity.badRequest().build();
         }
-        return emailAccountRepository.findById(accountId)
+        return requireAccount(accountId, user)
                 .map(account -> {
                     String keyword = q.trim().toLowerCase();
                     List<Email> all = emailRepository
@@ -219,8 +216,8 @@ public class EmailController {
                     List<Email> pageContent = start >= matched.size()
                             ? List.of()
                             : matched.subList(start, Math.min(start + size, matched.size()));
-                    return ResponseEntity.ok(
-                            (Page<Email>) new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size()));
+                    return asEmailView(user,
+                            new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size()));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -443,12 +440,11 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Get custom folders for an account.
-     */
     @GetMapping("/account/{accountId}/folders")
-    public ResponseEntity<List<EmailFolder>> getFoldersByAccount(@PathVariable Long accountId) {
-        return emailAccountRepository.findById(accountId)
+    public ResponseEntity<List<EmailFolder>> getFoldersByAccount(
+            @PathVariable Long accountId,
+            @AuthenticationPrincipal User user) {
+        return requireAccount(accountId, user)
                 .map(account -> ResponseEntity.ok(emailFolderRepository.findByAccountOrderByDisplayOrder(account)))
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -899,12 +895,11 @@ public class EmailController {
         }
     }
 
-    /**
-     * Get email statistics
-     */
     @GetMapping("/account/{accountId}/stats")
-    public ResponseEntity<Map<String, Object>> getEmailStats(@PathVariable Long accountId) {
-        return emailAccountRepository.findById(accountId)
+    public ResponseEntity<Map<String, Object>> getEmailStats(
+            @PathVariable Long accountId,
+            @AuthenticationPrincipal User user) {
+        return requireAccount(accountId, user)
                 .map(account -> {
                     Map<String, Object> stats = new HashMap<>();
                     stats.put("unreadCount", emailRepository.countByAccountAndIsReadFalse(account));
@@ -912,5 +907,34 @@ public class EmailController {
                     return ResponseEntity.ok(stats);
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Finds an account by ID and checks access: ADMIN/DEVELOPER see any account,
+     * USER only sees their own accounts.
+     */
+    private Optional<EmailAccount> requireAccount(Long accountId, User user) {
+        return emailAccountRepository.findById(accountId)
+                .filter(a -> canAccessAccount(user, a));
+    }
+
+    private boolean canAccessAccount(User user, EmailAccount account) {
+        if (user.getRole() == User.Role.ADMIN || user.getRole() == User.Role.DEVELOPER) return true;
+        return account.getOwner() != null && account.getOwner().getId().equals(user.getId());
+    }
+
+    /**
+     * Wraps the email data in a DEVELOPER-safe Jackson view (Summary = no encrypted fields)
+     * for DEVELOPER role; returns plain data for USER and ADMIN.
+     */
+    private ResponseEntity<?> asEmailView(User user, Object data) {
+        if (user.getRole() == User.Role.DEVELOPER) {
+            MappingJacksonValue value = new MappingJacksonValue(data);
+            value.setSerializationView(EmailViews.Summary.class);
+            return ResponseEntity.ok(value);
+        }
+        return ResponseEntity.ok(data);
     }
 }

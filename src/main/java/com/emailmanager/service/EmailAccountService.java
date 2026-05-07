@@ -1,6 +1,7 @@
 package com.emailmanager.service;
 
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.User;
 import com.emailmanager.repository.EmailAccountRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -28,6 +29,16 @@ public class EmailAccountService {
     @Transactional(readOnly = true)
     public List<EmailAccount> getActiveAccounts() {
         return emailAccountRepository.findByIsActiveTrue();
+    }
+
+    @Transactional(readOnly = true)
+    public List<EmailAccount> getAccountsForUser(User owner) {
+        return emailAccountRepository.findByOwner(owner);
+    }
+
+    @Transactional(readOnly = true)
+    public List<EmailAccount> getActiveAccountsForUser(User owner) {
+        return emailAccountRepository.findByOwnerAndIsActiveTrue(owner);
     }
 
     @Transactional(readOnly = true)

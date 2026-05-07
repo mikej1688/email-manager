@@ -1,9 +1,10 @@
 import React from 'react';
+import apiClient from '../utils/apiClient';
 
 function Notifications({ notifications, onRefresh }) {
   const markAsRead = async (id) => {
     try {
-      await fetch(`/api/notifications/${id}/mark-read`, { method: 'PUT' });
+      await apiClient.put(`/api/notifications/${id}/mark-read`);
       onRefresh();
     } catch (error) {
       console.error('Error marking notification as read:', error);
@@ -12,7 +13,7 @@ function Notifications({ notifications, onRefresh }) {
 
   const markAllAsRead = async () => {
     try {
-      await fetch('/api/notifications/mark-all-read', { method: 'PUT' });
+      await apiClient.put('/api/notifications/mark-all-read');
       onRefresh();
     } catch (error) {
       console.error('Error marking all notifications as read:', error);

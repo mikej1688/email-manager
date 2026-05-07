@@ -2,6 +2,7 @@ package com.emailmanager.service;
 
 import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.repository.EmailAccountRepository;
+import com.emailmanager.repository.UserRepository;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
@@ -9,7 +10,6 @@ import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
-import com.google.api.client.util.store.DataStore;
 import com.google.api.client.util.store.MemoryDataStoreFactory;
 import com.google.api.services.gmail.GmailScopes;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +33,7 @@ import java.util.Map;
 public class OAuth2Service {
 
     private final EmailAccountRepository emailAccountRepository;
+    private final UserRepository userRepository;
     private final NetHttpTransport httpTransport = new NetHttpTransport();
     private final GsonFactory jsonFactory = GsonFactory.getDefaultInstance();
 
@@ -86,24 +87,23 @@ public class OAuth2Service {
     }
 
     /**
-     * Generate OAuth authorization URL for Gmail
+     * Generate OAuth authorization URL for Gmail.
+     * The userId is embedded in the state so the callback can assign the account owner
+     * without needing a JWT (Google's redirect carries no Authorization header).
      */
-    public String getAuthorizationUrl(String userEmail) {
+    public String getAuthorizationUrl(String userEmail, Long userId) {
         try {
-            log.info("Generating authorization URL for: {}", userEmail);
-            log.debug("OAuth Config - ClientID present: {}, ClientSecret present: {}",
-                    clientId != null && !clientId.isEmpty(),
-                    clientSecret != null && !clientSecret.isEmpty());
-
+            log.info("Generating Gmail authorization URL for: {}", userEmail);
             GoogleAuthorizationCodeFlow flow = createFlow();
+            // State format: "email|userId" — parsed in handleCallback
+            String state = userEmail + "|" + userId;
             String authUrl = flow.newAuthorizationUrl()
                     .setRedirectUri(redirectUri)
-                    .setState(userEmail) // Store email in state for callback
-                    .set("prompt", "consent") // Force consent screen so refresh token is always returned
+                    .setState(state)
+                    .set("prompt", "consent") // Force consent so refresh token is always returned
                     .set("access_type", "offline")
                     .build();
-
-            log.info("Generated authorization URL successfully");
+            log.info("Generated Gmail authorization URL successfully");
             return authUrl;
         } catch (Exception e) {
             log.error("Failed to generate authorization URL", e);
@@ -112,18 +112,22 @@ public class OAuth2Service {
     }
 
     /**
-     * Handle OAuth callback and exchange code for tokens
+     * Handle OAuth callback: exchange code for tokens, set account owner from state.
+     * State format is "email|userId" as written by getAuthorizationUrl.
      */
-    public EmailAccount handleCallback(String authorizationCode, String userEmail) {
+    public EmailAccount handleCallback(String authorizationCode, String state) {
+        // Parse state — legacy callers may pass bare email (no '|'), handled gracefully
+        String[] parts = state.split("\\|", 2);
+        String userEmail = parts[0];
+        Long userId = parts.length == 2 ? tryParseLong(parts[1]) : null;
+
         try {
             GoogleAuthorizationCodeFlow flow = createFlow();
 
-            // Exchange authorization code for tokens
             GoogleTokenResponse tokenResponse = flow.newTokenRequest(authorizationCode)
                     .setRedirectUri(redirectUri)
                     .execute();
 
-            // Find or create email account
             EmailAccount account = emailAccountRepository.findByEmailAddress(userEmail)
                     .orElseGet(() -> {
                         EmailAccount newAccount = new EmailAccount();
@@ -133,6 +137,11 @@ public class OAuth2Service {
                         newAccount.setIsActive(true);
                         return newAccount;
                     });
+
+            // Assign owner if we have a userId from the state
+            if (userId != null && account.getOwner() == null) {
+                userRepository.findById(userId).ifPresent(account::setOwner);
+            }
 
             log.info("OAuth callback received tokens - accessToken present: {}, refreshToken present: {}",
                     tokenResponse.getAccessToken() != null,
@@ -303,6 +312,10 @@ public class OAuth2Service {
         } catch (Exception e) {
             log.error("Failed to revoke access for: {}", account.getEmailAddress(), e);
         }
+    }
+
+    private Long tryParseLong(String s) {
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return null; }
     }
 
     /**

@@ -1,7 +1,9 @@
 package com.emailmanager.entity;
 
 import com.emailmanager.config.AttributeEncryptor;
+import com.emailmanager.config.EmailViews;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonView;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -35,18 +37,22 @@ public class Email {
     @Column(nullable = false, unique = true)
     private String messageId; // Unique ID from email provider
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(nullable = false, columnDefinition = "TEXT")
     private String subject;
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(nullable = false, columnDefinition = "TEXT")
     private String fromAddress;
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "TEXT")
     private String fromName;
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "TEXT")
     private String toAddresses;
@@ -54,10 +60,12 @@ public class Email {
     @Column(columnDefinition = "TEXT")
     private String ccAddresses;
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "LONGTEXT")
     private String bodyPlainText;
 
+    @JsonView(EmailViews.Full.class)
     @Convert(converter = AttributeEncryptor.class)
     @Column(columnDefinition = "LONGTEXT")
     private String bodyHtml;

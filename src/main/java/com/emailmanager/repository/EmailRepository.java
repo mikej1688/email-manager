@@ -49,6 +49,8 @@ public interface EmailRepository extends JpaRepository<Email, Long> {
 
         Long countByAccountAndIsReadFalse(EmailAccount account);
 
+        Page<Email> findByAccountIn(List<EmailAccount> accounts, Pageable pageable);
+
         @Query("SELECT e FROM Email e WHERE e.account = :account AND (" +
                         "LOWER(e.subject) LIKE LOWER(CONCAT('%', :query, '%')) OR " +
                         "LOWER(e.fromAddress) LIKE LOWER(CONCAT('%', :query, '%')) OR " +

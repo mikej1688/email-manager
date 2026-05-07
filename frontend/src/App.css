@@ -8,16 +8,48 @@
   color: white;
   padding: 1rem 2rem;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
 }
 
 .App-header h1 {
-  margin: 0 0 1rem 0;
+  margin: 0;
   font-size: 1.8rem;
+  white-space: nowrap;
 }
 
 .App-header nav {
   display: flex;
   gap: 2rem;
+  flex: 1;
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
+}
+
+.user-name {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.logout-btn {
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.4);
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.3rem 0.75rem;
+}
+
+.logout-btn:hover {
+  background: rgba(255,255,255,0.25);
 }
 
 .App-header nav a {

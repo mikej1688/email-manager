@@ -11,6 +11,22 @@ SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;
 
 -- ============================================================
+-- users  (must exist before email_accounts references it)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id          BIGINT       NOT NULL AUTO_INCREMENT,
+    email       VARCHAR(255) NOT NULL,
+    name        VARCHAR(255) NOT NULL,
+    google_id   VARCHAR(255),
+    role        VARCHAR(20)  NOT NULL DEFAULT 'USER',
+    created_at  DATETIME,
+    updated_at  DATETIME,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_users_email    (email),
+    UNIQUE KEY uq_users_google_id (google_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
 -- email_accounts
 -- ============================================================
 CREATE TABLE IF NOT EXISTS email_accounts (
@@ -26,6 +42,7 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     imap_port                 INT,
     smtp_server               VARCHAR(255),
     smtp_port                 INT,
+    owner_id                  BIGINT,
     is_active                 BOOLEAN         NOT NULL DEFAULT TRUE,
     last_sync_time            DATETIME,
     initial_sync_complete     BOOLEAN         NOT NULL DEFAULT FALSE,
@@ -33,7 +50,9 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     created_at                DATETIME,
     updated_at                DATETIME,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_email_accounts_address (email_address)
+    UNIQUE KEY uq_email_accounts_address (email_address),
+    CONSTRAINT fk_accounts_owner
+        FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================

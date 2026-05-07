@@ -1,20 +1,21 @@
 package com.emailmanager.controller;
 
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.User;
 import com.emailmanager.service.EmailAccountService;
 import com.emailmanager.service.EmailSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-/**
- * REST API controller for email accounts
- */
 @RestController
 @RequestMapping("/api/accounts")
 @RequiredArgsConstructor
@@ -24,107 +25,105 @@ public class EmailAccountController {
     private final EmailAccountService emailAccountService;
     private final EmailSyncService emailSyncService;
 
-    /**
-     * Get all email accounts
-     */
+    /** List all accounts belonging to the authenticated user (ADMIN sees all). */
     @GetMapping
-    public ResponseEntity<List<EmailAccount>> getAllAccounts() {
-        List<EmailAccount> accounts = emailAccountService.getAllAccounts();
+    public ResponseEntity<List<EmailAccount>> getAllAccounts(@AuthenticationPrincipal User user) {
+        List<EmailAccount> accounts = user.getRole() == User.Role.ADMIN
+                ? emailAccountService.getAllAccounts()
+                : emailAccountService.getAccountsForUser(user);
         return ResponseEntity.ok(accounts);
     }
 
-    /**
-     * Get active email accounts
-     */
+    /** Active accounts for the authenticated user (ADMIN sees all). */
     @GetMapping("/active")
-    public ResponseEntity<List<EmailAccount>> getActiveAccounts() {
-        List<EmailAccount> accounts = emailAccountService.getActiveAccounts();
+    public ResponseEntity<List<EmailAccount>> getActiveAccounts(@AuthenticationPrincipal User user) {
+        List<EmailAccount> accounts = user.getRole() == User.Role.ADMIN
+                ? emailAccountService.getActiveAccounts()
+                : emailAccountService.getActiveAccountsForUser(user);
         return ResponseEntity.ok(accounts);
     }
 
-    /**
-     * Get email account by ID
-     */
+    /** Get a single account — only if it belongs to the caller (or caller is ADMIN). */
     @GetMapping("/{id}")
-    public ResponseEntity<EmailAccount> getAccountById(@PathVariable Long id) {
+    public ResponseEntity<EmailAccount> getAccountById(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
         return emailAccountService.findById(id)
+                .filter(a -> canAccess(user, a))
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Add new email account
-     */
+    /** Add a new account — owned by the authenticated user. */
     @PostMapping
-    public ResponseEntity<EmailAccount> addAccount(@RequestBody EmailAccount account) {
-        EmailAccount savedAccount = emailAccountService.createAccount(account);
-        return ResponseEntity.status(HttpStatus.CREATED).body(savedAccount);
+    public ResponseEntity<EmailAccount> addAccount(
+            @RequestBody EmailAccount account,
+            @AuthenticationPrincipal User user) {
+        account.setOwner(user);
+        EmailAccount saved = emailAccountService.createAccount(account);
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved);
     }
 
-    /**
-     * Update email account
-     */
+    /** Update an account — only the owner or ADMIN. */
     @PutMapping("/{id}")
     public ResponseEntity<EmailAccount> updateAccount(
             @PathVariable Long id,
-            @RequestBody EmailAccount account) {
-
+            @RequestBody EmailAccount account,
+            @AuthenticationPrincipal User user) {
+        Optional<EmailAccount> existing = emailAccountService.findById(id)
+                .filter(a -> canAccess(user, a));
+        if (existing.isEmpty()) return ResponseEntity.notFound().build();
         return emailAccountService.updateAccount(id, account)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Delete email account
-     */
+    /** Delete an account — only the owner or ADMIN. */
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteAccount(@PathVariable Long id) {
-        if (emailAccountService.deleteAccount(id)) {
-            return ResponseEntity.ok().build();
-        }
-        return ResponseEntity.notFound().build();
+    public ResponseEntity<Void> deleteAccount(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
+        boolean owned = emailAccountService.findById(id)
+                .filter(a -> canAccess(user, a))
+                .isPresent();
+        if (!owned) return ResponseEntity.notFound().build();
+        emailAccountService.deleteAccount(id);
+        return ResponseEntity.ok().build();
     }
 
-    /**
-     * Test connection to email account
-     */
     @PostMapping("/test-connection")
     public ResponseEntity<Map<String, Object>> testConnectionForDraft(@RequestBody EmailAccount account) {
-        EmailAccount hydratedAccount = emailAccountService.createAccountPreview(account);
-        boolean connected = emailSyncService.testConnection(hydratedAccount);
+        EmailAccount hydrated = emailAccountService.createAccountPreview(account);
+        boolean connected = emailSyncService.testConnection(hydrated);
         Map<String, Object> result = new HashMap<>();
         result.put("success", connected);
         if (connected) {
             result.put("message", "Connection successful.");
-        } else if (hydratedAccount.getProvider() == EmailAccount.EmailProvider.YAHOO) {
+        } else if (hydrated.getProvider() == EmailAccount.EmailProvider.YAHOO) {
             result.put("message",
-                    "Yahoo rejected the login. Use a Yahoo app password instead of your regular sign-in password, then try again.");
+                    "Yahoo rejected the login. Use a Yahoo app password instead of your regular sign-in password.");
         } else {
             result.put("message", "Could not connect with these settings.");
         }
         return ResponseEntity.ok(result);
     }
 
-    /**
-     * Test connection to saved email account
-     */
     @PostMapping("/{id}/test-connection")
-    public ResponseEntity<Boolean> testConnection(@PathVariable Long id) {
+    public ResponseEntity<Boolean> testConnection(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
         return emailAccountService.findById(id)
-                .map(account -> {
-                    boolean connected = emailSyncService.testConnection(account);
-                    return ResponseEntity.ok(connected);
-                })
+                .filter(a -> canAccess(user, a))
+                .map(account -> ResponseEntity.ok(emailSyncService.testConnection(account)))
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Sync specific email account (incremental — only fetches emails newer than
-     * the last sync). Used by background polling in the frontend.
-     */
     @PostMapping("/{id}/sync")
-    public ResponseEntity<String> syncAccount(@PathVariable Long id) {
+    public ResponseEntity<String> syncAccount(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
         return emailAccountService.findById(id)
+                .filter(a -> canAccess(user, a))
                 .map(account -> {
                     emailSyncService.syncAccount(account);
                     return ResponseEntity.ok("Sync completed successfully");
@@ -132,14 +131,12 @@ public class EmailAccountController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Force a full re-sync for a Gmail account — resets the incremental-sync
-     * state so every email in every label is fetched from Gmail from the
-     * beginning, not just emails newer than the last sync time.
-     */
     @PostMapping("/{id}/full-resync")
-    public ResponseEntity<String> fullResyncAccount(@PathVariable Long id) {
+    public ResponseEntity<String> fullResyncAccount(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
         return emailAccountService.findById(id)
+                .filter(a -> canAccess(user, a))
                 .map(account -> {
                     emailSyncService.fullResyncAccount(account);
                     return ResponseEntity.ok("Full re-sync completed successfully");
@@ -147,12 +144,17 @@ public class EmailAccountController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Sync all active accounts
-     */
+    /** ADMIN only: sync all active accounts across all users. */
     @PostMapping("/sync-all")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<String> syncAllAccounts() {
         emailSyncService.syncAllAccounts();
         return ResponseEntity.ok("Sync initiated for all accounts");
+    }
+
+    // Returns true if the user owns the account or is ADMIN.
+    private boolean canAccess(User user, EmailAccount account) {
+        if (user.getRole() == User.Role.ADMIN) return true;
+        return account.getOwner() != null && account.getOwner().getId().equals(user.getId());
     }
 }

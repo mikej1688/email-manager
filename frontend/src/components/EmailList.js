@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ComposeEmail from './ComposeEmail';
+import apiClient from '../utils/apiClient';
 
 const POLL_INTERVAL_MS = 60000; // 60 seconds
 const PAGE_SIZE = 50;
@@ -134,7 +135,7 @@ function EmailList({ accounts }) {
     setSearchLoading(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/emails/account/${selectedAccount}/search?q=${encodeURIComponent(q)}&page=0&size=10`);
+        const res = await apiClient.get(`/api/emails/account/${selectedAccount}/search?q=${encodeURIComponent(q)}&page=0&size=10`);
         if (res.ok) {
           const data = await res.json();
           setSearchResults(data.content || []);
@@ -181,11 +182,11 @@ function EmailList({ accounts }) {
       if (!accountId) return;
       try {
         // Sync from Gmail before checking for new arrivals
-        await fetch(`/api/accounts/${accountId}/sync`, { method: 'POST' });
+        await apiClient.post(`/api/accounts/${accountId}/sync`);
 
         const url = buildFilterUrl(accountId, currentFilter) + `?page=0&size=${PAGE_SIZE}`;
 
-        const response = await fetch(url);
+        const response = await apiClient.get(url);
         if (!response.ok) return;
         const data = await response.json();
         const fetched = data.content || [];
@@ -217,7 +218,7 @@ function EmailList({ accounts }) {
       const backendPage = resetPage ? 0 : page - 1;
       const url = buildFilterUrl(accountId, currentFilter) + `?page=${backendPage}&size=${PAGE_SIZE}`;
 
-      const response = await fetch(url);
+      const response = await apiClient.get(url);
       const data = await response.json();
       setEmails(data.content || []);
       setTotalPages(data.totalPages || 1);
@@ -234,7 +235,7 @@ function EmailList({ accounts }) {
   const fetchCustomFolders = useCallback(async (accountId = selectedAccount) => {
     if (!accountId) return;
     try {
-      const response = await fetch(`/api/emails/account/${accountId}/folders`);
+      const response = await apiClient.get(`/api/emails/account/${accountId}/folders`);
       if (!response.ok) {
         return;
       }
@@ -258,7 +259,7 @@ function EmailList({ accounts }) {
     setLoading(true);
     setNewEmailCount(0);
     try {
-      await fetch(`/api/accounts/${selectedAccount}/sync`, { method: 'POST' });
+      await apiClient.post(`/api/accounts/${selectedAccount}/sync`);
     } catch (error) {
       console.error('Sync error:', error);
     }
@@ -268,11 +269,11 @@ function EmailList({ accounts }) {
   const openEmail = async (email) => {
     setEmailLoading(true);
     try {
-      const response = await fetch(`/api/emails/${email.id}`);
+      const response = await apiClient.get(`/api/emails/${email.id}`);
       const data = await response.json();
       setSelectedEmail(data);
       if (!email.isRead) {
-        await fetch(`/api/emails/${email.id}/mark-read`, { method: 'PUT' });
+        await apiClient.put(`/api/emails/${email.id}/mark-read`);
         setEmails(prev => prev.map(e => e.id === email.id ? { ...e, isRead: true } : e));
       }
     } catch (error) {
@@ -286,7 +287,7 @@ function EmailList({ accounts }) {
     if (!selectedEmail) return;
     setEmailLoading(true);
     try {
-      const response = await fetch(`/api/emails/${selectedEmail.id}/refresh-body`, { method: 'PUT' });
+      const response = await apiClient.put(`/api/emails/${selectedEmail.id}/refresh-body`);
       if (response.ok) {
         const data = await response.json();
         setSelectedEmail(data);
@@ -302,7 +303,7 @@ function EmailList({ accounts }) {
 
   const trashEmail = async (emailId) => {
     try {
-      const response = await fetch(`/api/emails/${emailId}/trash`, { method: 'PUT' });
+      const response = await apiClient.put(`/api/emails/${emailId}/trash`);
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
         setSelectedEmails(prev => {
@@ -321,7 +322,7 @@ function EmailList({ accounts }) {
 
   const archiveEmail = async (emailId) => {
     try {
-      const response = await fetch(`/api/emails/${emailId}/archive`, { method: 'PUT' });
+      const response = await apiClient.put(`/api/emails/${emailId}/archive`);
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
         setSelectedEmails(prev => {
@@ -339,7 +340,7 @@ function EmailList({ accounts }) {
 
   const moveEmail = async (emailId, category) => {
     try {
-      const response = await fetch(`/api/emails/${emailId}/move?category=${category}`, { method: 'PUT' });
+      const response = await apiClient.put(`/api/emails/${emailId}/move?category=${category}`);
       if (response.ok) {
         const updated = await response.json();
         setEmails(prev => prev.filter(e => e.id !== emailId || doesEmailMatchFilter(updated, filter))
@@ -365,7 +366,7 @@ function EmailList({ accounts }) {
 
   const moveEmailToCustomFolder = async (emailId, folderId) => {
     try {
-      const response = await fetch(`/api/emails/${emailId}/move-to-folder?folderId=${folderId}`, { method: 'PUT' });
+      const response = await apiClient.put(`/api/emails/${emailId}/move-to-folder?folderId=${folderId}`);
       if (response.ok) {
         const updated = await response.json();
         const targetFolder = customFolders.find(folder => folder.id === folderId);
@@ -402,11 +403,7 @@ function EmailList({ accounts }) {
     }
 
     try {
-      const response = await fetch(`/api/emails/account/${selectedAccount}/folders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() })
-      });
+      const response = await apiClient.post(`/api/emails/account/${selectedAccount}/folders`, { name: name.trim() });
 
       if (!response.ok) {
         let msg = 'Failed to create folder';
@@ -434,7 +431,7 @@ function EmailList({ accounts }) {
   const toggleStar = async (emailId, isStarred) => {
     try {
       const endpoint = isStarred ? 'unstar' : 'star';
-      await fetch(`/api/emails/${emailId}/${endpoint}`, { method: 'PUT' });
+      await apiClient.put(`/api/emails/${emailId}/${endpoint}`);
       setEmails(prev => prev.map(e => e.id === emailId ? { ...e, isStarred: !isStarred } : e));
       if (selectedEmail && selectedEmail.id === emailId) {
         setSelectedEmail(prev => ({ ...prev, isStarred: !isStarred }));
@@ -460,7 +457,7 @@ function EmailList({ accounts }) {
 
   const discardDraft = async (draftId) => {
     try {
-      const response = await fetch(`/api/emails/drafts/${draftId}`, { method: 'DELETE' });
+      const response = await apiClient.delete(`/api/emails/drafts/${draftId}`);
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== draftId));
         setSelectedEmails(prev => {
@@ -481,7 +478,7 @@ function EmailList({ accounts }) {
 
   const permanentlyDeleteEmail = async (emailId) => {
     try {
-      const response = await fetch(`/api/emails/${emailId}`, { method: 'DELETE' });
+      const response = await apiClient.delete(`/api/emails/${emailId}`);
       if (response.ok) {
         setEmails(prev => prev.filter(e => e.id !== emailId));
         setSelectedEmails(prev => {
@@ -865,7 +862,7 @@ function EmailList({ accounts }) {
                 <button className="btn-icon" title={selectedEmail.isRead ? 'Mark unread' : 'Mark read'}
                   onClick={async () => {
                     const endpoint = selectedEmail.isRead ? 'mark-unread' : 'mark-read';
-                    await fetch(`/api/emails/${selectedEmail.id}/${endpoint}`, { method: 'PUT' });
+                    await apiClient.put(`/api/emails/${selectedEmail.id}/${endpoint}`);
                     setSelectedEmail(prev => ({ ...prev, isRead: !prev.isRead }));
                     setEmails(prev => prev.map(e => e.id === selectedEmail.id ? { ...e, isRead: !selectedEmail.isRead } : e));
                   }}>

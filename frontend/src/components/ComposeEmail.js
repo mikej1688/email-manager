@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import apiClient from '../utils/apiClient';
 
 const RECIPIENT_SUGGESTION_LIMIT = 8;
 
@@ -124,7 +125,7 @@ function ComposeEmail({ accounts, onClose, onSent, onDraftSaved, onDraftDiscarde
     let cancelled = false;
     const timeoutId = setTimeout(async () => {
       try {
-        const response = await fetch(
+        const response = await apiClient.get(
           `/api/emails/recipient-suggestions?q=${encodeURIComponent(activeRecipientToken)}&limit=${RECIPIENT_SUGGESTION_LIMIT}`
         );
 
@@ -246,17 +247,13 @@ function ComposeEmail({ accounts, onClose, onSent, onDraftSaved, onDraftDiscarde
     setError('');
 
     try {
-      const response = await fetch('/api/emails/drafts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          draftId: draftId ? String(draftId) : '',
-          accountId: String(accountId),
-          to,
-          cc,
-          subject,
-          body
-        })
+      const response = await apiClient.post('/api/emails/drafts', {
+        draftId: draftId ? String(draftId) : '',
+        accountId: String(accountId),
+        to,
+        cc,
+        subject,
+        body
       });
 
       if (!response.ok) {
@@ -329,11 +326,7 @@ function ComposeEmail({ accounts, onClose, onSent, onDraftSaved, onDraftDiscarde
         };
       }
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const response = await apiClient.post(url, payload);
 
       if (response.ok) {
         if (onSent) onSent();
@@ -378,7 +371,7 @@ function ComposeEmail({ accounts, onClose, onSent, onDraftSaved, onDraftDiscarde
     setError('');
 
     try {
-      const response = await fetch(`/api/emails/drafts/${draftId}`, { method: 'DELETE' });
+      const response = await apiClient.delete(`/api/emails/drafts/${draftId}`);
       if (!response.ok) {
         let msg = 'Failed to discard draft';
         try {

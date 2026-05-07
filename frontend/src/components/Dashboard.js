@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import apiClient from '../utils/apiClient';
 
 function Dashboard({ accounts }) {
   const [stats, setStats] = useState({
@@ -17,7 +18,7 @@ function Dashboard({ accounts }) {
       let totalUnread = 0;
       
       for (const account of accounts) {
-        const response = await fetch(`/api/emails/account/${account.id}/stats`);
+        const response = await apiClient.get(`/api/emails/account/${account.id}/stats`);
         const data = await response.json();
         totalUnread += data.unreadCount || 0;
       }

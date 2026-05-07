@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import apiClient from '../utils/apiClient';
 
 function AccountManagement({ onAccountsChange }) {
   const emptyForm = {
@@ -66,7 +67,7 @@ function AccountManagement({ onAccountsChange }) {
 
   const fetchAccounts = async () => {
     try {
-      const response = await fetch('/api/accounts');
+      const response = await apiClient.get('/api/accounts');
       const data = await response.json();
       setAccounts(data);
       if (onAccountsChange) {
@@ -85,7 +86,7 @@ function AccountManagement({ onAccountsChange }) {
     }
     
     try {
-      const response = await fetch(`/api/oauth/gmail/authorize?email=${encodeURIComponent(oauthEmail)}`);
+      const response = await apiClient.get(`/api/oauth/gmail/authorize?email=${encodeURIComponent(oauthEmail)}`);
       const data = await response.json();
       
       if (data.authorizationUrl) {
@@ -103,11 +104,7 @@ function AccountManagement({ onAccountsChange }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildAccountPayload(formData))
-      });
+      await apiClient.post('/api/accounts', buildAccountPayload(formData));
       setShowForm(false);
       setFormData(emptyForm);
       setTestConnectionResult(null);
@@ -162,11 +159,7 @@ function AccountManagement({ onAccountsChange }) {
     setTestConnectionResult(null);
 
     try {
-      const response = await fetch('/api/accounts/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildAccountPayload(formData))
-      });
+      const response = await apiClient.post('/api/accounts/test-connection', buildAccountPayload(formData));
 
       if (!response.ok) {
         setTestConnectionResult({ success: false, message: 'Connection test failed.' });
@@ -192,7 +185,7 @@ function AccountManagement({ onAccountsChange }) {
   const deleteAccount = async (id) => {
     if (window.confirm('Are you sure you want to delete this account?')) {
       try {
-        await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+        await apiClient.delete(`/api/accounts/${id}`);
         fetchAccounts();
       } catch (error) {
         console.error('Error deleting account:', error);
@@ -202,7 +195,7 @@ function AccountManagement({ onAccountsChange }) {
 
   const syncAccount = async (id) => {
     try {
-      await fetch(`/api/accounts/${id}/full-resync`, { method: 'POST' });
+      await apiClient.post(`/api/accounts/${id}/full-resync`);
       alert('Full sync completed — all emails have been loaded from Gmail.');
     } catch (error) {
       console.error('Error syncing account:', error);
