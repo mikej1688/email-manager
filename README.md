@@ -344,7 +344,7 @@ spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
 
 ## License
 
-This project is for educational/personal use.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
 
 ## Support
 
