@@ -2,6 +2,7 @@ package com.emailmanager.service.email;
 
 import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.EmailAttachment;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
@@ -10,6 +11,7 @@ import jakarta.mail.search.MessageIDTerm;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -314,21 +316,13 @@ public class ImapEmailService implements EmailProviderService {
             email.setCcAddresses(InternetAddress.toString(ccAddresses));
         }
 
-        // Body
+        // Body and attachments
         try {
             Object content = message.getContent();
             if (content instanceof String) {
                 email.setBodyPlainText((String) content);
             } else if (content instanceof Multipart) {
-                Multipart multipart = (Multipart) content;
-                for (int i = 0; i < multipart.getCount(); i++) {
-                    BodyPart bodyPart = multipart.getBodyPart(i);
-                    if (bodyPart.isMimeType("text/plain")) {
-                        email.setBodyPlainText(bodyPart.getContent().toString());
-                    } else if (bodyPart.isMimeType("text/html")) {
-                        email.setBodyHtml(bodyPart.getContent().toString());
-                    }
-                }
+                extractMultipart((Multipart) content, email);
             }
         } catch (Exception e) {
             log.warn("Failed to extract email body", e);
@@ -346,6 +340,47 @@ public class ImapEmailService implements EmailProviderService {
         email.setIsRead(message.isSet(Flags.Flag.SEEN));
 
         return email;
+    }
+
+    private void extractMultipart(Multipart multipart, Email email) throws Exception {
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            String disposition = part.getDisposition();
+            if (part.isMimeType("text/plain") && !Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
+                if (email.getBodyPlainText() == null) {
+                    email.setBodyPlainText(part.getContent().toString());
+                }
+            } else if (part.isMimeType("text/html") && !Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
+                if (email.getBodyHtml() == null) {
+                    email.setBodyHtml(part.getContent().toString());
+                }
+            } else if (part.getContent() instanceof Multipart) {
+                extractMultipart((Multipart) part.getContent(), email);
+            } else if (Part.ATTACHMENT.equalsIgnoreCase(disposition) || part.getFileName() != null) {
+                String filename = part.getFileName();
+                if (filename == null) filename = "attachment-" + i;
+                String contentType = part.getContentType();
+                if (contentType != null && contentType.contains(";")) {
+                    contentType = contentType.substring(0, contentType.indexOf(';')).trim();
+                }
+                byte[] data = null;
+                try (InputStream is = part.getInputStream()) {
+                    data = is.readAllBytes();
+                } catch (Exception e) {
+                    log.warn("Failed to read attachment data for '{}': {}", filename, e.getMessage());
+                }
+                EmailAttachment attachment = new EmailAttachment();
+                attachment.setEmail(email);
+                attachment.setFilename(filename);
+                attachment.setContentType(contentType != null ? contentType : "application/octet-stream");
+                attachment.setData(data);
+                attachment.setSize(data != null ? (long) data.length : 0L);
+                email.getAttachments().add(attachment);
+            }
+        }
+        if (!email.getAttachments().isEmpty()) {
+            email.setHasAttachments(true);
+        }
     }
 
     private void closeQuietly(Folder folder) {

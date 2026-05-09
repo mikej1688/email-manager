@@ -1,11 +1,11 @@
 package com.emailmanager.controller;
 
-import com.emailmanager.config.EmailViews;
 import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.EmailAttachment;
 import com.emailmanager.entity.EmailFolder;
-import com.emailmanager.entity.User;
 import com.emailmanager.repository.EmailAccountRepository;
+import com.emailmanager.repository.EmailAttachmentRepository;
 import com.emailmanager.repository.EmailFolderRepository;
 import com.emailmanager.repository.EmailRepository;
 import com.emailmanager.repository.NotificationRepository;
@@ -21,9 +21,9 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.converter.json.MappingJacksonValue;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -37,9 +37,6 @@ import java.util.Optional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-/**
- * REST API controller for emails
- */
 @RestController
 @RequestMapping("/api/emails")
 @RequiredArgsConstructor
@@ -48,6 +45,7 @@ import java.util.UUID;
 public class EmailController {
 
     private final EmailRepository emailRepository;
+    private final EmailAttachmentRepository emailAttachmentRepository;
     private final EmailAccountRepository emailAccountRepository;
     private final EmailFolderRepository emailFolderRepository;
     private final NotificationRepository notificationRepository;
@@ -56,13 +54,8 @@ public class EmailController {
     private final ImapEmailService imapEmailService;
     private final AuditLogService auditLogService;
 
-    /**
-     * Get all emails with pagination, scoped to the authenticated user's accounts.
-     * ADMIN and DEVELOPER see all accounts; USER sees only their own.
-     */
     @GetMapping
-    public ResponseEntity<?> getAllEmails(
-            @AuthenticationPrincipal User user,
+    public ResponseEntity<Page<Email>> getAllEmails(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "receivedDate") String sortBy,
@@ -70,39 +63,33 @@ public class EmailController {
 
         Sort.Direction sortDirection = direction.equalsIgnoreCase("ASC") ? Sort.Direction.ASC : Sort.Direction.DESC;
         Pageable pageable = PageRequest.of(page, size, Sort.by(sortDirection, sortBy));
-
-        Page<Email> emails = user.getRole() == User.Role.USER
-                ? emailRepository.findByAccountIn(emailAccountRepository.findByOwner(user), pageable)
-                : emailRepository.findAll(pageable);
-        return asEmailView(user, emails);
+        return ResponseEntity.ok(emailRepository.findAll(pageable));
     }
 
     @GetMapping("/account/{accountId}")
-    public ResponseEntity<?> getEmailsByAccount(
+    public ResponseEntity<Page<Email>> getEmailsByAccount(
             @PathVariable Long accountId,
-            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    return asEmailView(user, emailRepository.findByAccount(account, pageable));
+                    return ResponseEntity.ok(emailRepository.findByAccount(account, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/account/{accountId}/unread")
-    public ResponseEntity<?> getUnreadEmails(
+    public ResponseEntity<Page<Email>> getUnreadEmails(
             @PathVariable Long accountId,
-            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    return asEmailView(user, emailRepository.findByAccountAndIsReadAndCategoryNotIn(
+                    return ResponseEntity.ok(emailRepository.findByAccountAndIsReadAndCategoryNotIn(
                             account, false,
                             List.of(Email.EmailCategory.TRASH, Email.EmailCategory.SENT, Email.EmailCategory.DRAFT),
                             pageable));
@@ -111,31 +98,29 @@ public class EmailController {
     }
 
     @GetMapping("/account/{accountId}/category/{category}")
-    public ResponseEntity<?> getEmailsByCategory(
+    public ResponseEntity<Page<Email>> getEmailsByCategory(
             @PathVariable Long accountId,
             @PathVariable Email.EmailCategory category,
-            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    return asEmailView(user,
+                    return ResponseEntity.ok(
                             emailRepository.findByAccountAndCategoryAndFolderIsNull(account, category, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/account/{accountId}/folder/{folderId}")
-    public ResponseEntity<?> getEmailsByFolder(
+    public ResponseEntity<Page<Email>> getEmailsByFolder(
             @PathVariable Long accountId,
             @PathVariable Long folderId,
-            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> emailFolderRepository.findById(folderId)
                         .filter(folder -> folder.getAccount().getId().equals(account.getId()))
                         .map(folder -> {
@@ -145,39 +130,34 @@ public class EmailController {
                                     ? emailRepository.findByAccountAndGmailLabel(account, folder.getGmailLabelId(),
                                             pageable)
                                     : emailRepository.findByAccountAndFolder(account, folder, pageable);
-                            return asEmailView(user, emails);
+                            return ResponseEntity.ok(emails);
                         })
                         .orElse(ResponseEntity.notFound().build()))
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/account/{accountId}/importance/{importance}")
-    public ResponseEntity<?> getEmailsByImportance(
+    public ResponseEntity<Page<Email>> getEmailsByImportance(
             @PathVariable Long accountId,
             @PathVariable Email.ImportanceLevel importance,
-            @AuthenticationPrincipal User user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-                    return asEmailView(user,
+                    return ResponseEntity.ok(
                             emailRepository.findByAccountAndImportance(account, importance, pageable));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<?> getEmailById(
-            @PathVariable Long id,
-            @AuthenticationPrincipal User user,
-            HttpServletRequest request) {
+    public ResponseEntity<Email> getEmailById(@PathVariable Long id, HttpServletRequest request) {
         return emailRepository.findById(id)
-                .filter(email -> canAccessAccount(user, email.getAccount()))
                 .map(email -> {
                     auditLogService.logEmailRead(id, email.getAccount().getId(), resolveClientIp(request));
-                    return asEmailView(user, email);
+                    return ResponseEntity.ok(email);
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -185,13 +165,11 @@ public class EmailController {
     /**
      * Search emails for an account by keyword.
      * Encrypted columns cannot be searched with SQL LIKE, so emails are loaded
-     * for the account (already decrypted by the JPA converter) and filtered
-     * in-memory before pagination is applied.
+     * (already decrypted by the JPA converter) and filtered in-memory.
      */
     @GetMapping("/account/{accountId}/search")
-    public ResponseEntity<?> searchEmails(
+    public ResponseEntity<Page<Email>> searchEmails(
             @PathVariable Long accountId,
-            @AuthenticationPrincipal User user,
             @RequestParam String q,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -200,7 +178,7 @@ public class EmailController {
         if (q == null || q.trim().isEmpty()) {
             return ResponseEntity.badRequest().build();
         }
-        return requireAccount(accountId, user)
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     String keyword = q.trim().toLowerCase();
                     List<Email> all = emailRepository
@@ -216,8 +194,8 @@ public class EmailController {
                     List<Email> pageContent = start >= matched.size()
                             ? List.of()
                             : matched.subList(start, Math.min(start + size, matched.size()));
-                    return asEmailView(user,
-                            new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size()));
+                    Page<Email> resultPage = new PageImpl<>(pageContent, PageRequest.of(page, size), matched.size());
+                    return ResponseEntity.ok(resultPage);
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -242,71 +220,50 @@ public class EmailController {
         return field != null && field.toLowerCase().contains(keyword);
     }
 
-    /**
-     * Mark email as read
-     */
     @PutMapping("/{id}/mark-read")
     public ResponseEntity<Email> markAsRead(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
                     email.setIsRead(true);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Mark email as unread
-     */
     @PutMapping("/{id}/mark-unread")
     public ResponseEntity<Email> markAsUnread(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
                     email.setIsRead(false);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Star email
-     */
     @PutMapping("/{id}/star")
     public ResponseEntity<Email> starEmail(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
                     email.setIsStarred(true);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Unstar email
-     */
     @PutMapping("/{id}/unstar")
     public ResponseEntity<Email> unstarEmail(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .map(email -> {
                     email.setIsStarred(false);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Re-fetch the body of an existing email from Gmail, embedding inline images.
-     * Use this to fix emails that were synced before the image-handling
-     * improvement.
-     */
     @PutMapping("/{id}/refresh-body")
     @Transactional
     public ResponseEntity<Email> refreshEmailBody(@PathVariable Long id) {
-        java.util.Optional<Email> optional = emailRepository.findById(id);
+        Optional<Email> optional = emailRepository.findById(id);
         if (optional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -323,7 +280,7 @@ public class EmailController {
     }
 
     /**
-     * Delete email - trash on remote provider and remove locally
+     * Delete email — moves to trash on Gmail, deletes locally.
      */
     @DeleteMapping("/{id}")
     @Transactional
@@ -331,21 +288,24 @@ public class EmailController {
         return emailRepository.findById(id)
                 .map(email -> {
                     auditLogService.logEmailDelete(id, email.getAccount().getId(), resolveClientIp(request));
-                    // Delete on remote provider
                     try {
                         EmailAccount account = emailAccountRepository
                                 .findById(email.getAccount().getId()).orElse(null);
                         if (account != null) {
+                            boolean remoteOk;
                             if (account.getProvider() == EmailAccount.EmailProvider.GMAIL) {
-                                gmailService.deleteEmail(account, email.getMessageId());
+                                remoteOk = gmailService.trashEmail(account, email.getMessageId());
                             } else {
-                                imapEmailService.deleteEmail(account, email.getMessageId());
+                                remoteOk = imapEmailService.deleteEmail(account, email.getMessageId());
+                            }
+                            if (!remoteOk) {
+                                log.warn("Remote delete failed for email {} — not removing locally", id);
+                                return ResponseEntity.status(org.springframework.http.HttpStatus.BAD_GATEWAY).<Void>build();
                             }
                         }
                     } catch (Exception e) {
                         log.warn("Remote delete failed for email {}: {}", id, e.getMessage());
                     }
-                    // Remove notifications referencing this email before deleting
                     notificationRepository.deleteAll(notificationRepository.findByEmail(email));
                     emailRepository.delete(email);
                     return ResponseEntity.ok().<Void>build();
@@ -353,9 +313,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Move email to trash (soft delete - changes category to TRASH)
-     */
     @PutMapping("/{id}/trash")
     @Transactional
     public ResponseEntity<Email> trashEmail(@PathVariable Long id) {
@@ -375,15 +332,11 @@ public class EmailController {
                         // Continue with local update even if remote fails
                     }
                     email.setCategory(Email.EmailCategory.TRASH);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Archive email
-     */
     @PutMapping("/{id}/archive")
     @Transactional
     public ResponseEntity<Email> archiveEmail(@PathVariable Long id) {
@@ -399,15 +352,11 @@ public class EmailController {
                         // Continue with local update
                     }
                     email.setCategory(Email.EmailCategory.ARCHIVED);
-                    Email updated = emailRepository.save(email);
-                    return ResponseEntity.ok(updated);
+                    return ResponseEntity.ok(emailRepository.save(email));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Move email to a category/folder
-     */
     @PutMapping("/{id}/move")
     @Transactional
     public ResponseEntity<Email> moveEmail(@PathVariable Long id, @RequestParam String category) {
@@ -431,8 +380,7 @@ public class EmailController {
                         }
                         email.setFolder(null);
                         email.setCategory(targetCategory);
-                        Email updated = emailRepository.save(email);
-                        return ResponseEntity.ok(updated);
+                        return ResponseEntity.ok(emailRepository.save(email));
                     } catch (IllegalArgumentException e) {
                         return ResponseEntity.<Email>badRequest().build();
                     }
@@ -441,17 +389,12 @@ public class EmailController {
     }
 
     @GetMapping("/account/{accountId}/folders")
-    public ResponseEntity<List<EmailFolder>> getFoldersByAccount(
-            @PathVariable Long accountId,
-            @AuthenticationPrincipal User user) {
-        return requireAccount(accountId, user)
+    public ResponseEntity<List<EmailFolder>> getFoldersByAccount(@PathVariable Long accountId) {
+        return emailAccountRepository.findById(accountId)
                 .map(account -> ResponseEntity.ok(emailFolderRepository.findByAccountOrderByDisplayOrder(account)))
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Create a custom folder for an account.
-     */
     @PostMapping("/account/{accountId}/folders")
     @Transactional
     public ResponseEntity<?> createFolder(@PathVariable Long accountId, @RequestBody Map<String, String> request) {
@@ -483,9 +426,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Move an email into a custom folder.
-     */
     @PutMapping("/{id}/move-to-folder")
     @Transactional
     public ResponseEntity<Email> moveEmailToCustomFolder(@PathVariable Long id, @RequestParam Long folderId) {
@@ -521,13 +461,9 @@ public class EmailController {
         }
 
         email.setFolder(folder);
-        Email updated = emailRepository.save(email);
-        return ResponseEntity.ok(updated);
+        return ResponseEntity.ok(emailRepository.save(email));
     }
 
-    /**
-     * Get saved recipient suggestions for compose autocomplete.
-     */
     @GetMapping("/recipient-suggestions")
     public ResponseEntity<List<String>> getRecipientSuggestions(
             @RequestParam(defaultValue = "") String q,
@@ -535,9 +471,6 @@ public class EmailController {
         return ResponseEntity.ok(recipientAddressService.getSuggestions(q, limit));
     }
 
-    /**
-     * Save or update an unfinished draft email locally.
-     */
     @PostMapping("/drafts")
     @Transactional
     public ResponseEntity<Map<String, String>> saveDraft(@RequestBody Map<String, String> request) {
@@ -586,9 +519,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Discard a saved draft.
-     */
     @DeleteMapping("/drafts/{id}")
     @Transactional
     public ResponseEntity<Map<String, String>> discardDraft(@PathVariable Long id) {
@@ -608,9 +538,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Send a new email (compose)
-     */
     @PostMapping("/send")
     public ResponseEntity<Map<String, String>> sendEmail(@RequestBody Map<String, String> request,
             HttpServletRequest httpRequest) {
@@ -638,7 +565,6 @@ public class EmailController {
                         success = imapEmailService.sendEmail(account, to, subject, body);
                     }
                     if (success) {
-                        // Save a local copy in Sent folder
                         Email sent = new Email();
                         sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
@@ -672,9 +598,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Reply to an email
-     */
     @PostMapping("/{id}/reply")
     public ResponseEntity<Map<String, String>> replyToEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
@@ -699,7 +622,6 @@ public class EmailController {
                                 to, email.getToAddresses(),
                                 email.getCcAddresses(), email.getSubject(), body, replyAll, isHtml);
                     } else {
-                        // For IMAP, send as a new email with Re: prefix
                         String replySubject = email.getSubject().startsWith("Re:") ? email.getSubject()
                                 : "Re: " + email.getSubject();
                         String replyRecipients = replyAll
@@ -710,7 +632,6 @@ public class EmailController {
 
                     Map<String, String> result = new HashMap<>();
                     if (success) {
-                        // Save a local copy in Sent folder
                         String replySubjectSaved = email.getSubject().startsWith("Re:") ? email.getSubject()
                                 : "Re: " + email.getSubject();
                         String replyTo = replyAll
@@ -749,9 +670,6 @@ public class EmailController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Forward an email
-     */
     @PostMapping("/{id}/forward")
     public ResponseEntity<Map<String, String>> forwardEmail(@PathVariable Long id,
             @RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
@@ -788,7 +706,6 @@ public class EmailController {
 
                     Map<String, String> result = new HashMap<>();
                     if (success) {
-                        // Save a local copy in Sent folder
                         Email sent = new Email();
                         sent.setAccount(emailAccountRepository.getReferenceById(account.getId()));
                         sent.setMessageId("sent-" + UUID.randomUUID().toString());
@@ -864,7 +781,6 @@ public class EmailController {
                     .filter(email -> email.getCategory() == Email.EmailCategory.DRAFT)
                     .ifPresent(emailRepository::delete);
         } catch (NumberFormatException ignored) {
-            // Ignore malformed client values rather than failing a successful send.
         }
     }
 
@@ -895,11 +811,62 @@ public class EmailController {
         }
     }
 
+    @GetMapping("/{emailId}/attachments")
+    @Transactional
+    public ResponseEntity<List<Map<String, Object>>> listAttachments(@PathVariable Long emailId) {
+        Optional<Email> emailOpt = emailRepository.findById(emailId);
+        if (emailOpt.isEmpty()) return ResponseEntity.notFound().build();
+
+        Email email = emailOpt.get();
+        List<EmailAttachment> attachments = emailAttachmentRepository.findByEmailId(emailId);
+
+        // Auto-extract from Gmail for emails that were synced before attachment support was added
+        if (attachments.isEmpty()
+                && email.getAccount().getProvider() == EmailAccount.EmailProvider.GMAIL) {
+            try {
+                gmailService.fetchAndStoreAttachments(email.getAccount(), email);
+                emailRepository.save(email);
+                attachments = emailAttachmentRepository.findByEmailId(emailId);
+            } catch (Exception e) {
+                log.warn("Could not auto-fetch attachments for email {}: {}", emailId, e.getMessage());
+            }
+        }
+
+        List<Map<String, Object>> result = attachments.stream().map(a -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", a.getId());
+            m.put("filename", a.getFilename());
+            m.put("contentType", a.getContentType());
+            m.put("size", a.getSize());
+            return m;
+        }).toList();
+        return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/{emailId}/attachments/{attachmentId}/download")
+    @Transactional(readOnly = true)
+    public ResponseEntity<byte[]> downloadAttachment(
+            @PathVariable Long emailId, @PathVariable Long attachmentId) {
+        return emailAttachmentRepository.findByIdAndEmailId(attachmentId, emailId)
+                .map(a -> {
+                    byte[] data = a.getData();
+                    if (data == null) data = new byte[0];
+                    HttpHeaders headers = new HttpHeaders();
+                    try {
+                        headers.setContentType(MediaType.parseMediaType(a.getContentType()));
+                    } catch (Exception e) {
+                        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                    }
+                    headers.setContentDispositionFormData("attachment", a.getFilename());
+                    headers.setContentLength(data.length);
+                    return ResponseEntity.ok().headers(headers).body(data);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
     @GetMapping("/account/{accountId}/stats")
-    public ResponseEntity<Map<String, Object>> getEmailStats(
-            @PathVariable Long accountId,
-            @AuthenticationPrincipal User user) {
-        return requireAccount(accountId, user)
+    public ResponseEntity<Map<String, Object>> getEmailStats(@PathVariable Long accountId) {
+        return emailAccountRepository.findById(accountId)
                 .map(account -> {
                     Map<String, Object> stats = new HashMap<>();
                     stats.put("unreadCount", emailRepository.countByAccountAndIsReadFalse(account));
@@ -907,34 +874,5 @@ public class EmailController {
                     return ResponseEntity.ok(stats);
                 })
                 .orElse(ResponseEntity.notFound().build());
-    }
-
-    // ── helpers ──────────────────────────────────────────────────────────────
-
-    /**
-     * Finds an account by ID and checks access: ADMIN/DEVELOPER see any account,
-     * USER only sees their own accounts.
-     */
-    private Optional<EmailAccount> requireAccount(Long accountId, User user) {
-        return emailAccountRepository.findById(accountId)
-                .filter(a -> canAccessAccount(user, a));
-    }
-
-    private boolean canAccessAccount(User user, EmailAccount account) {
-        if (user.getRole() == User.Role.ADMIN || user.getRole() == User.Role.DEVELOPER) return true;
-        return account.getOwner() != null && account.getOwner().getId().equals(user.getId());
-    }
-
-    /**
-     * Wraps the email data in a DEVELOPER-safe Jackson view (Summary = no encrypted fields)
-     * for DEVELOPER role; returns plain data for USER and ADMIN.
-     */
-    private ResponseEntity<?> asEmailView(User user, Object data) {
-        if (user.getRole() == User.Role.DEVELOPER) {
-            MappingJacksonValue value = new MappingJacksonValue(data);
-            value.setSerializationView(EmailViews.Summary.class);
-            return ResponseEntity.ok(value);
-        }
-        return ResponseEntity.ok(data);
     }
 }

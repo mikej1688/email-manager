@@ -41,6 +41,20 @@ const doesCustomFolderMoveMatchFilter = (currentFilter, targetFolderId) => {
 
 const PERMANENT_DELETE_CONFIRMATION = 'you are going to permanently delete the email(s), do you want to go ahead?';
 
+const getAttachmentIcon = (contentType) => {
+  if (!contentType) return '📎';
+  if (contentType.startsWith('image/')) return '🖼️';
+  if (contentType === 'application/pdf') return '📄';
+  if (contentType.includes('word') || contentType.includes('document')) return '📝';
+  if (contentType.includes('sheet') || contentType.includes('excel') || contentType.includes('csv')) return '📊';
+  if (contentType.includes('presentation') || contentType.includes('powerpoint')) return '📊';
+  if (contentType.startsWith('video/')) return '🎬';
+  if (contentType.startsWith('audio/')) return '🎵';
+  if (contentType.includes('zip') || contentType.includes('compressed') || contentType.includes('archive')) return '🗜️';
+  if (contentType.startsWith('text/')) return '📄';
+  return '📎';
+};
+
 const buildFilterOptions = (customFolders) => {
   const baseOptions = [
     { value: 'all', label: 'All' },
@@ -88,6 +102,7 @@ function EmailList({ accounts }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [attachments, setAttachments] = useState([]);
   const searchContainerRef = useRef(null);
 
   // Stable refs so the polling interval doesn't go stale
@@ -268,6 +283,7 @@ function EmailList({ accounts }) {
 
   const openEmail = async (email) => {
     setEmailLoading(true);
+    setAttachments([]);
     try {
       const response = await apiClient.get(`/api/emails/${email.id}`);
       const data = await response.json();
@@ -276,6 +292,10 @@ function EmailList({ accounts }) {
         await apiClient.put(`/api/emails/${email.id}/mark-read`);
         setEmails(prev => prev.map(e => e.id === email.id ? { ...e, isRead: true } : e));
       }
+      try {
+        const attResp = await apiClient.get(`/api/emails/${email.id}/attachments`);
+        if (attResp.ok) setAttachments(await attResp.json());
+      } catch (_) {}
     } catch (error) {
       console.error('Error opening email:', error);
     } finally {
@@ -974,6 +994,34 @@ function EmailList({ accounts }) {
                   minHeight: 0,
                 }}
               />
+            )}
+
+            {/* Attachments */}
+            {attachments.length > 0 && (
+              <div className="email-attachments">
+                <div className="email-attachments-label">Attachments ({attachments.length})</div>
+                <div className="email-attachments-list">
+                  {attachments.map(att => (
+                    <a
+                      key={att.id}
+                      className="email-attachment-chip"
+                      href={`/api/emails/${selectedEmail.id}/attachments/${att.id}/download`}
+                      download={att.filename}
+                      title={`${att.filename} (${att.size ? (att.size / 1024).toFixed(1) + ' KB' : 'unknown size'})`}
+                    >
+                      <span className="email-attachment-icon">{getAttachmentIcon(att.contentType)}</span>
+                      <span className="email-attachment-name">{att.filename}</span>
+                      {att.size > 0 && (
+                        <span className="email-attachment-size">
+                          {att.size >= 1048576
+                            ? (att.size / 1048576).toFixed(1) + ' MB'
+                            : (att.size / 1024).toFixed(1) + ' KB'}
+                        </span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
             )}
 
             {/* Reply / Forward / Open action bar */}

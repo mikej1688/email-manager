@@ -2,6 +2,7 @@ package com.emailmanager.service.email;
 
 import com.emailmanager.entity.Email;
 import com.emailmanager.entity.EmailAccount;
+import com.emailmanager.entity.EmailAttachment;
 import com.emailmanager.service.OAuth2Service;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.http.javanet.NetHttpTransport;
@@ -83,10 +84,7 @@ public class GmailService implements EmailProviderService {
             // Time filter for incremental syncs (empty string on first sync = no filter)
             String afterFilter = buildAfterFilter(account);
 
-            // Build time filter for incremental syncs (empty on first sync = fetch all)
-            // Use "after:" filter for incremental syncs; no query at all on initial sync
-            // so that EVERY message is returned regardless of label.
-            // includeSpamTrash=true ensures spam and trash are not silently excluded.
+            // Use "after:" filter for incremental syncs; no query filter on initial sync.
             String query = afterFilter.isEmpty() ? null : afterFilter;
             boolean isInitialSync = afterFilter.isEmpty();
             log.info("Gmail fetch: query='{}', afterFilter='{}', initialSync={}", query, afterFilter, isInitialSync);
@@ -97,8 +95,9 @@ public class GmailService implements EmailProviderService {
                 if (Thread.currentThread().isInterrupted())
                     break;
 
+                // includeSpamTrash=false excludes TRASH/SPAM so trashed emails don't reappear on sync.
                 com.google.api.services.gmail.Gmail.Users.Messages.List req = service.users().messages().list("me")
-                        .setIncludeSpamTrash(true)
+                        .setIncludeSpamTrash(false)
                         .setMaxResults(50L);
                 if (query != null)
                     req.setQ(query);
@@ -175,7 +174,7 @@ public class GmailService implements EmailProviderService {
             Map<String, EmailFolder> folderCache = new java.util.HashMap<>();
 
             com.google.api.services.gmail.Gmail.Users.Messages.List req = service.users().messages().list("me")
-                    .setIncludeSpamTrash(true)
+                    .setIncludeSpamTrash(false)
                     .setMaxResults(50L)
                     .setPageToken(account.getGmailBackgroundPageToken());
 
@@ -511,10 +510,66 @@ public class GmailService implements EmailProviderService {
         email.setBodyPlainText(null);
         Map<String, String> cidImages = new LinkedHashMap<>();
         List<String> standaloneImages = new ArrayList<>();
+        List<EmailAttachment> attachments = new ArrayList<>();
         if (fullMessage.getPayload() != null) {
-            extractBody(fullMessage.getPayload(), email, service, email.getMessageId(), cidImages, standaloneImages);
+            extractBody(fullMessage.getPayload(), email, service, email.getMessageId(), cidImages, standaloneImages, attachments);
         }
         applyCidAndImageFallback(email, cidImages, standaloneImages);
+        if (!attachments.isEmpty()) {
+            email.getAttachments().clear();
+            email.getAttachments().addAll(attachments);
+            email.setHasAttachments(true);
+        }
+    }
+
+    /**
+     * Fetches and stores attachments for an already-saved email without overwriting the body.
+     * Used to populate attachments for emails that were synced before attachment support was added.
+     */
+    public void fetchAndStoreAttachments(EmailAccount account, Email email) throws Exception {
+        Gmail service = getGmailService(account);
+        Message fullMessage = service.users().messages()
+                .get("me", email.getMessageId())
+                .setFormat("full")
+                .execute();
+        List<EmailAttachment> attachments = new ArrayList<>();
+        if (fullMessage.getPayload() != null) {
+            collectAttachmentsOnly(fullMessage.getPayload(), email, service, email.getMessageId(), attachments);
+        }
+        if (!attachments.isEmpty()) {
+            email.getAttachments().addAll(attachments);
+            email.setHasAttachments(true);
+        }
+    }
+
+    private void collectAttachmentsOnly(com.google.api.services.gmail.model.MessagePart part,
+            Email email, Gmail gmailService, String messageId, List<EmailAttachment> attachments) {
+        String mimeType = part.getMimeType() != null ? part.getMimeType().toLowerCase() : "";
+        if (mimeType.startsWith("multipart/")) {
+            if (part.getParts() != null) {
+                for (com.google.api.services.gmail.model.MessagePart sub : part.getParts()) {
+                    collectAttachmentsOnly(sub, email, gmailService, messageId, attachments);
+                }
+            }
+        } else if (!mimeType.startsWith("text/")) {
+            // Skip inline images (those with Content-ID)
+            String contentId = null;
+            if (part.getHeaders() != null) {
+                for (com.google.api.services.gmail.model.MessagePartHeader h : part.getHeaders()) {
+                    if ("content-id".equalsIgnoreCase(h.getName())) {
+                        contentId = h.getValue();
+                        break;
+                    }
+                }
+            }
+            if (contentId == null) {
+                String filename = extractFilename(part);
+                if (filename != null) {
+                    fetchAndAddAttachment(part, email, gmailService, messageId,
+                            mimeType.isBlank() ? "application/octet-stream" : mimeType, filename, attachments);
+                }
+            }
+        }
     }
 
     private Email convertGmailToEmail(Message gmailMessage, EmailAccount account, Gmail gmailService,
@@ -553,11 +608,16 @@ public class GmailService implements EmailProviderService {
         // Parse body — handle both simple and multipart MIME structures
         Map<String, String> cidImages = new LinkedHashMap<>();
         List<String> standaloneImages = new ArrayList<>();
+        List<EmailAttachment> attachments = new ArrayList<>();
         if (gmailMessage.getPayload() != null) {
             extractBody(gmailMessage.getPayload(), email, gmailService, gmailMessage.getId(), cidImages,
-                    standaloneImages);
+                    standaloneImages, attachments);
         }
         applyCidAndImageFallback(email, cidImages, standaloneImages);
+        if (!attachments.isEmpty()) {
+            email.getAttachments().addAll(attachments);
+            email.setHasAttachments(true);
+        }
 
         // Set dates
         if (gmailMessage.getInternalDate() != null) {
@@ -583,13 +643,15 @@ public class GmailService implements EmailProviderService {
     }
 
     /**
-     * Recursively extracts text, HTML, and inline images from a MIME message part.
+     * Recursively extracts text, HTML, inline images, and file attachments from a MIME message part.
      * Inline images (with Content-ID) are collected as base64 data URIs so that
      * cid: references in the HTML can be rewritten to data URIs before saving.
+     * Non-inline parts with a filename are collected as EmailAttachment objects.
      */
     private void extractBody(com.google.api.services.gmail.model.MessagePart part, Email email,
             Gmail gmailService, String messageId,
-            Map<String, String> cidImages, List<String> standaloneImages) {
+            Map<String, String> cidImages, List<String> standaloneImages,
+            List<EmailAttachment> attachments) {
         String mimeType = part.getMimeType() != null ? part.getMimeType().toLowerCase() : "";
 
         if (mimeType.equals("text/html")) {
@@ -607,11 +669,11 @@ public class GmailService implements EmailProviderService {
         } else if (mimeType.startsWith("multipart/")) {
             if (part.getParts() != null) {
                 for (com.google.api.services.gmail.model.MessagePart subPart : part.getParts()) {
-                    extractBody(subPart, email, gmailService, messageId, cidImages, standaloneImages);
+                    extractBody(subPart, email, gmailService, messageId, cidImages, standaloneImages, attachments);
                 }
             }
         } else if (mimeType.startsWith("image/")) {
-            // Collect inline images; replace cid: refs after full traversal
+            // Check if this is an inline image (has Content-ID) or a standalone image attachment
             String contentId = null;
             if (part.getHeaders() != null) {
                 for (com.google.api.services.gmail.model.MessagePartHeader h : part.getHeaders()) {
@@ -621,31 +683,37 @@ public class GmailService implements EmailProviderService {
                     }
                 }
             }
-            String base64Data = null;
-            if (part.getBody() != null) {
-                if (part.getBody().getData() != null) {
-                    // URL-safe base64 → standard base64 for data URI
-                    base64Data = part.getBody().getData().replace('-', '+').replace('_', '/');
-                } else if (part.getBody().getAttachmentId() != null && gmailService != null) {
-                    try {
-                        com.google.api.services.gmail.model.MessagePartBody attachment = gmailService.users().messages()
-                                .attachments()
-                                .get("me", messageId, part.getBody().getAttachmentId())
-                                .execute();
-                        if (attachment.getData() != null) {
-                            base64Data = attachment.getData().replace('-', '+').replace('_', '/');
+            String filename = extractFilename(part);
+            if (contentId == null && filename != null) {
+                // Standalone image attachment — treat it like any other attachment
+                fetchAndAddAttachment(part, email, gmailService, messageId, mimeType, filename, attachments);
+            } else {
+                // Inline image — embed as data URI
+                String base64Data = null;
+                if (part.getBody() != null) {
+                    if (part.getBody().getData() != null) {
+                        base64Data = part.getBody().getData().replace('-', '+').replace('_', '/');
+                    } else if (part.getBody().getAttachmentId() != null && gmailService != null) {
+                        try {
+                            com.google.api.services.gmail.model.MessagePartBody att = gmailService.users().messages()
+                                    .attachments()
+                                    .get("me", messageId, part.getBody().getAttachmentId())
+                                    .execute();
+                            if (att.getData() != null) {
+                                base64Data = att.getData().replace('-', '+').replace('_', '/');
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to fetch inline image attachment (cid={}): {}", contentId, e.getMessage());
                         }
-                    } catch (Exception e) {
-                        log.warn("Failed to fetch inline image attachment (cid={}): {}", contentId, e.getMessage());
                     }
                 }
-            }
-            if (base64Data != null) {
-                String dataUri = "data:" + mimeType + ";base64," + base64Data;
-                if (contentId != null) {
-                    cidImages.put(contentId, dataUri);
-                } else {
-                    standaloneImages.add(dataUri);
+                if (base64Data != null) {
+                    String dataUri = "data:" + mimeType + ";base64," + base64Data;
+                    if (contentId != null) {
+                        cidImages.put(contentId, dataUri);
+                    } else {
+                        standaloneImages.add(dataUri);
+                    }
                 }
             }
         } else if (mimeType.isEmpty()) {
@@ -654,8 +722,62 @@ public class GmailService implements EmailProviderService {
             if (data != null && email.getBodyPlainText() == null) {
                 email.setBodyPlainText(new String(Base64.getUrlDecoder().decode(data), StandardCharsets.UTF_8));
             }
+        } else {
+            // Non-text, non-image, non-multipart part — treat as file attachment if it has a filename
+            String filename = extractFilename(part);
+            if (filename != null) {
+                fetchAndAddAttachment(part, email, gmailService, messageId, mimeType, filename, attachments);
+            }
         }
-        // Other types (application/pdf, etc.) are intentionally skipped
+    }
+
+    private String extractFilename(com.google.api.services.gmail.model.MessagePart part) {
+        if (part.getFilename() != null && !part.getFilename().isBlank()) {
+            return part.getFilename();
+        }
+        if (part.getHeaders() != null) {
+            for (com.google.api.services.gmail.model.MessagePartHeader h : part.getHeaders()) {
+                if ("content-disposition".equalsIgnoreCase(h.getName()) && h.getValue() != null) {
+                    for (String param : h.getValue().split(";")) {
+                        String t = param.trim();
+                        if (t.toLowerCase().startsWith("filename=")) {
+                            return t.substring("filename=".length()).replaceAll("[\"']", "").trim();
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private void fetchAndAddAttachment(com.google.api.services.gmail.model.MessagePart part, Email email,
+            Gmail gmailService, String messageId, String mimeType, String filename,
+            List<EmailAttachment> attachments) {
+        byte[] data = null;
+        if (part.getBody() != null) {
+            if (part.getBody().getData() != null) {
+                data = Base64.getUrlDecoder().decode(part.getBody().getData());
+            } else if (part.getBody().getAttachmentId() != null && gmailService != null) {
+                try {
+                    com.google.api.services.gmail.model.MessagePartBody att = gmailService.users().messages()
+                            .attachments()
+                            .get("me", messageId, part.getBody().getAttachmentId())
+                            .execute();
+                    if (att.getData() != null) {
+                        data = Base64.getUrlDecoder().decode(att.getData());
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to fetch attachment '{}': {}", filename, e.getMessage());
+                }
+            }
+        }
+        EmailAttachment attachment = new EmailAttachment();
+        attachment.setEmail(email);
+        attachment.setFilename(filename);
+        attachment.setContentType(mimeType.isBlank() ? "application/octet-stream" : mimeType);
+        attachment.setData(data);
+        attachment.setSize(data != null ? (long) data.length : (part.getBody() != null && part.getBody().getSize() != null ? part.getBody().getSize() : 0L));
+        attachments.add(attachment);
     }
 
     /**

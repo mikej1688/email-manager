@@ -9,6 +9,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Entity representing an individual email message
@@ -118,6 +120,12 @@ public class Email {
     // Used to query emails by label for accurate Gmail-side counts.
     @Column(columnDefinition = "TEXT")
     private String gmailLabelIds;
+
+    private Boolean hasAttachments = false;
+
+    @JsonIgnore
+    @OneToMany(mappedBy = "email", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<EmailAttachment> attachments = new ArrayList<>();
 
     private LocalDateTime processedAt;
     private LocalDateTime createdAt;

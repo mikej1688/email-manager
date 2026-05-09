@@ -1,14 +1,12 @@
 package com.emailmanager.controller;
 
 import com.emailmanager.entity.EmailAccount;
-import com.emailmanager.entity.User;
 import com.emailmanager.service.OAuth2Service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.view.RedirectView;
 
@@ -35,11 +33,9 @@ public class OAuth2Controller {
      * GET /api/oauth/gmail/authorize?email=user@example.com
      */
     @GetMapping("/gmail/authorize")
-    public ResponseEntity<Map<String, String>> startGmailAuth(
-            @RequestParam String email,
-            @AuthenticationPrincipal User user) {
+    public ResponseEntity<Map<String, String>> startGmailAuth(@RequestParam String email) {
         try {
-            String authUrl = oAuth2Service.getAuthorizationUrl(email, user.getId());
+            String authUrl = oAuth2Service.getAuthorizationUrl(email, 0L);
             Map<String, String> response = new HashMap<>();
             response.put("authorizationUrl", authUrl);
             response.put("email", email);

@@ -2,7 +2,6 @@ package com.emailmanager.service;
 
 import com.emailmanager.entity.EmailAccount;
 import com.emailmanager.repository.EmailAccountRepository;
-import com.emailmanager.repository.UserRepository;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
@@ -33,7 +32,6 @@ import java.util.Map;
 public class OAuth2Service {
 
     private final EmailAccountRepository emailAccountRepository;
-    private final UserRepository userRepository;
     private final NetHttpTransport httpTransport = new NetHttpTransport();
     private final GsonFactory jsonFactory = GsonFactory.getDefaultInstance();
 
@@ -112,14 +110,12 @@ public class OAuth2Service {
     }
 
     /**
-     * Handle OAuth callback: exchange code for tokens, set account owner from state.
+     * Handle OAuth callback: exchange code for tokens.
      * State format is "email|userId" as written by getAuthorizationUrl.
      */
     public EmailAccount handleCallback(String authorizationCode, String state) {
-        // Parse state — legacy callers may pass bare email (no '|'), handled gracefully
         String[] parts = state.split("\\|", 2);
         String userEmail = parts[0];
-        Long userId = parts.length == 2 ? tryParseLong(parts[1]) : null;
 
         try {
             GoogleAuthorizationCodeFlow flow = createFlow();
@@ -137,11 +133,6 @@ public class OAuth2Service {
                         newAccount.setIsActive(true);
                         return newAccount;
                     });
-
-            // Assign owner if we have a userId from the state
-            if (userId != null && account.getOwner() == null) {
-                userRepository.findById(userId).ifPresent(account::setOwner);
-            }
 
             log.info("OAuth callback received tokens - accessToken present: {}, refreshToken present: {}",
                     tokenResponse.getAccessToken() != null,

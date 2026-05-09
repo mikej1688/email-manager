@@ -1,7 +1,6 @@
 package com.emailmanager.entity;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -54,11 +53,6 @@ public class EmailAccount {
     private Integer imapPort;
     private String smtpServer;
     private Integer smtpPort;
-
-    @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "owner_id")
-    private User owner;
 
     @Column(nullable = false)
     private Boolean isActive = true;
