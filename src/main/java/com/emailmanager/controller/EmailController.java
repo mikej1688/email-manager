@@ -305,6 +305,7 @@ public class EmailController {
                         }
                     } catch (Exception e) {
                         log.warn("Remote delete failed for email {}: {}", id, e.getMessage());
+                        return ResponseEntity.status(org.springframework.http.HttpStatus.BAD_GATEWAY).<Void>build();
                     }
                     notificationRepository.deleteAll(notificationRepository.findByEmail(email));
                     emailRepository.delete(email);
@@ -329,7 +330,7 @@ public class EmailController {
                             }
                         }
                     } catch (Exception e) {
-                        // Continue with local update even if remote fails
+                        log.warn("Remote trash failed for email {}: {}", id, e.getMessage());
                     }
                     email.setCategory(Email.EmailCategory.TRASH);
                     return ResponseEntity.ok(emailRepository.save(email));

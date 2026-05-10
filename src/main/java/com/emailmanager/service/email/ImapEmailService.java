@@ -8,6 +8,7 @@ import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.search.FlagTerm;
 import jakarta.mail.search.MessageIDTerm;
+import com.sun.mail.imap.IMAPFolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -174,21 +175,27 @@ public class ImapEmailService implements EmailProviderService {
     @Override
     public boolean deleteEmail(EmailAccount account, String messageId) {
         Store store = null;
-        Folder folder = null;
-
         try {
             store = openImapStore(account);
+            Folder trashFolder = findTrashFolder(store);
 
             Folder[] folders = store.getDefaultFolder().list("*");
             for (Folder candidate : folders) {
                 if ((candidate.getType() & Folder.HOLDS_MESSAGES) == 0 || !candidate.exists()) {
                     continue;
                 }
-
+                // Skip searching the trash folder itself
+                if (trashFolder != null && candidate.getFullName().equalsIgnoreCase(trashFolder.getFullName())) {
+                    continue;
+                }
                 try {
                     candidate.open(Folder.READ_WRITE);
                     Message[] messages = candidate.search(new MessageIDTerm(messageId));
                     if (messages.length > 0) {
+                        if (trashFolder != null) {
+                            if (!trashFolder.isOpen()) trashFolder.open(Folder.READ_WRITE);
+                            candidate.copyMessages(messages, trashFolder);
+                        }
                         messages[0].setFlag(Flags.Flag.DELETED, true);
                         candidate.expunge();
                         return true;
@@ -198,12 +205,35 @@ public class ImapEmailService implements EmailProviderService {
                 }
             }
         } catch (Exception e) {
-            log.error("Failed to delete email", e);
+            log.error("Failed to move email to trash", e);
         } finally {
-            closeQuietly(folder, store);
+            closeQuietly(null, store);
         }
-
         return false;
+    }
+
+    private Folder findTrashFolder(Store store) {
+        // Try SPECIAL-USE \Trash attribute first (RFC 6154)
+        try {
+            Folder[] all = store.getDefaultFolder().list("*");
+            for (Folder f : all) {
+                if (f instanceof IMAPFolder imapF) {
+                    String[] attrs = imapF.getAttributes();
+                    for (String a : attrs) {
+                        if ("\\Trash".equalsIgnoreCase(a)) return f;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // Fall back to common trash folder names
+        for (String name : new String[]{"Trash", "Deleted Messages", "Deleted Items", "INBOX.Trash"}) {
+            try {
+                Folder f = store.getFolder(name);
+                if (f != null && f.exists()) return f;
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     @Override
